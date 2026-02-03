@@ -20,6 +20,7 @@ def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         pytest.skip(f"Missing required env var: {name}")
+        raise RuntimeError(f"Missing required env var: {name}")
     return value
 
 
