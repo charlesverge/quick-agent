@@ -54,11 +54,21 @@ Say hello to the input.
 Then run:
 
 ```bash
-python agent.py --agent hello --input safe/path/to/input.txt
+quick-agent --agent hello --input safe/path/to/input.txt
 ```
 
 Note: by default, file access is restricted to the `safe/` directory (use `--safe-dir` to change it).
 Agents can further restrict access with `safe_dir` in frontmatter (relative to the safe root).
+
+If you omit the entire `model:` section, the defaults are:
+
+```yaml
+model:
+  provider: "openai-compatible"
+  base_url: "https://api.openai.com/v1"
+  api_key_env: "OPENAI_API_KEY"
+  model_name: "gpt-5.2"
+```
 
 ## Structured Output Example
 
@@ -103,7 +113,7 @@ class SummaryOutput(BaseModel):
 Then run:
 
 ```bash
-python agent.py --agent structured --input safe/path/to/input.txt
+quick-agent --agent structured --input safe/path/to/input.txt
 ```
 
 ## OpenAI API Example
@@ -136,7 +146,48 @@ Answer the input in a short paragraph.
 Then run:
 
 ```bash
-python agent.py --agent openai --input safe/path/to/input.txt
+quick-agent --agent openai --input safe/path/to/input.txt
+```
+
+## Python Usage
+
+You can also run agents programmatically:
+
+```python
+from pathlib import Path
+
+import anyio
+
+from quick_agent import Orchestrator, QuickAgent
+from quick_agent.agent_registry import AgentRegistry
+from quick_agent.agent_tools import AgentTools
+from quick_agent.directory_permissions import DirectoryPermissions
+
+
+def main() -> None:
+    agent_roots = [Path("agents")]
+    tool_roots = [Path("tools")]
+    safe_dir = Path("safe")
+
+    registry = AgentRegistry(agent_roots)
+    tools = AgentTools(tool_roots)
+    permissions = DirectoryPermissions(safe_dir)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="hello",
+        input_path=Path("safe/path/to/input.txt"),
+        extra_tools=None,
+    )
+
+    result = anyio.run(agent.run)
+    print(result)
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## How It Works

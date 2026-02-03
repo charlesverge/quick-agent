@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from pydantic_ai.toolsets import FunctionToolset
@@ -59,6 +60,7 @@ def load_tools(
         if tool_obj.impl.kind != "python":
             raise NotImplementedError("Skeleton supports python tools only. Add MCP support next.")
 
+        func: Callable[..., Any]
         if tool_id == "filesystem.read_text":
             func = fs_adapter.read_text
         elif tool_id == "filesystem.write_text":
