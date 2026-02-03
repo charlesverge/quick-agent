@@ -1,0 +1,51 @@
+[project]
+name = "quick-agent"
+authors = [
+  {name = "Charles Verge", email = "1906614+charlesverge@users.noreply.github.com"}
+]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "anyio",
+  "pydantic",
+  "pydantic-ai",
+  "python-frontmatter",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy",
+  "ruff",
+]
+test = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+pythonpath = ["src"]
+filterwarnings = [
+  "ignore:codecs.open\\(\\) is deprecated\\. Use open\\(\\) instead\\.:DeprecationWarning:frontmatter",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quick_agent = ["tools/**/tool.json", "agents/**/*.md"]
+
+[tool.mypy]
+mypy_path = "typings"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["frontmatter"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py310"
+select = ["E9", "F"]

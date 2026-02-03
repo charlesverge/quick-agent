@@ -1,0 +1,10 @@
+{
+  "id": "filesystem.write_text",
+  "name": "filesystem.write_text",
+  "description": "Write a UTF-8 text file to disk. Returns the written path.",
+  "impl": {
+    "kind": "python",
+    "module": "quick_agent.tools.filesystem.write_text",
+    "function": "write_text"
+  }
+}

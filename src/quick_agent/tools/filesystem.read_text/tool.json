@@ -1,0 +1,10 @@
+{
+  "id": "filesystem.read_text",
+  "name": "filesystem.read_text",
+  "description": "Read a UTF-8 text file from disk.",
+  "impl": {
+    "kind": "python",
+    "module": "quick_agent.tools.filesystem.read_text",
+    "function": "read_text"
+  }
+}
