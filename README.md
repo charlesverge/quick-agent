@@ -1,6 +1,6 @@
-# Simple Agent
+# Quick Agent
 
-Simple Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter and executes a small chain of steps with limited context handling. It is intentionally small and explicit: you define the model, tools, and steps in a single Markdown file, and the orchestrator runs those steps in order with a bounded prompt preamble.
+Quick Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter and executes a small chain of steps with limited context handling. It is intentionally small and explicit: you define the model, tools, and steps in a single Markdown file, and the orchestrator runs those steps in order with a bounded prompt preamble.
 
 ## Project Goal
 
