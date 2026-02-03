@@ -61,7 +61,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-quick_agent = ["tools/**/tool.json", "agents/**/*.md"]
+quick_agent = ["llms.txt", "tools/**/tool.json", "agents/**/*.md"]
 
 [tool.setuptools.data-files]
 "quick_agent/agents" = ["agents/**/*.md"]

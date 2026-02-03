@@ -207,3 +207,12 @@ See the docs in `docs/`:
 - [docs/templates.md](docs/templates.md): Agent template format and examples.
 - [docs/python.md](docs/python.md): Embedding the orchestrator in scripts.
 - [docs/python.md#inter-agent-calls](docs/python.md#inter-agent-calls): Example of one agent calling another.
+- [src/quick_agent/llms.txt](src/quick_agent/llms.txt): LLM-oriented project summary and examples.
+
+Access the packaged `llms.txt` at runtime:
+
+```python
+from importlib.resources import files
+
+llms_path = files("quick_agent") / "llms.txt"
+```

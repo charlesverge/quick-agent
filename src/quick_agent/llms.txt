@@ -1,0 +1,215 @@
+# Quick Agent (llms.txt)
+
+**Project Summary**
+- Quick Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter and executes a small chain of steps with bounded context.
+- Agents are Markdown files with YAML front matter for model/tools/chain and `## step:<id>` sections for prompts.
+- Execution is deterministic: steps run in order, state stores prior step outputs, final output is written to disk, and optional handoff can invoke another agent.
+
+**Primary Entry Points**
+- CLI: `quick-agent --agent <id> --input <path>` (module: `quick_agent.cli:main`).
+- Python API: `quick_agent.orchestrator.Orchestrator` and `quick_agent.quick_agent.QuickAgent`.
+
+**How It Works (High Level)**
+- Agent files are loaded by `AgentRegistry` from user and packaged directories.
+- `QuickAgent` loads the agent spec, scopes file permissions, builds the toolset, then runs each chain step (text or structured).
+- Structured steps validate JSON output against a Pydantic schema and attempt extraction if the raw output contains extra text.
+- Outputs are written via `io_utils.write_output` and constrained by `DirectoryPermissions`.
+
+**Key Files**
+- `src/quick_agent/quick_agent.py`: core execution engine and step handling.
+- `src/quick_agent/orchestrator.py`: convenience wrapper for running agents.
+- `src/quick_agent/agent_registry.py`: loads agent Markdown files.
+- `src/quick_agent/agent_tools.py`: loads tools and builds the toolset.
+- `src/quick_agent/directory_permissions.py`: enforces safe directory access.
+- `src/quick_agent/tools/**/tool.json`: tool definitions (id, module, function).
+- `agents/`: example agents shipped with the repo.
+- `docs/`: CLI, template, and Python usage documentation.
+
+**Agent File Format (Essentials)**
+- Required fields: `name`, `model.base_url`, `model.model_name`, `chain`.
+- Each `chain` step must reference a matching `## step:<id>` section in the body.
+- Tools are referenced by id and resolved from `tool.json` definitions.
+- `safe_dir` must be relative and further scopes file access inside the CLI safe root.
+
+**Safety and Permissions**
+- File reads and writes are restricted to a safe directory configured by `--safe-dir` (default `safe`).
+- Agent-level `safe_dir` can further restrict access to a subdirectory.
+
+**Tests**
+- Tests live in `src/tests`.
+- Run with `pytest` (requires optional dependency group `test`).
+
+**Useful Docs**
+- `docs/cli.md`: CLI usage and options.
+- `docs/templates.md`: agent template format and examples.
+- `docs/python.md`: embedding the orchestrator and inter-agent calls.
+
+**Mini Example Agent**
+```markdown
+---
+name: "Hello Agent"
+description: "Minimal example"
+model:
+  provider: "openai-compatible"
+  base_url: "http://localhost:11434/v1"
+  api_key_env: "OPENAI_API_KEY"
+  model_name: "llama3"
+chain:
+  - id: hello
+    kind: text
+    prompt_section: step:hello
+output:
+  format: json
+  file: out/hello.json
+---
+
+## step:hello
+
+Say hello to the input.
+```
+
+**Mini Example (Structured Output)**
+```markdown
+---
+name: "Structured Agent"
+model:
+  provider: "openai-compatible"
+  base_url: "http://localhost:11434/v1"
+  api_key_env: "OPENAI_API_KEY"
+  model_name: "llama3"
+schemas:
+  Summary: "quick_agent.schemas.outputs:SummaryOutput"
+chain:
+  - id: summarize
+    kind: structured
+    prompt_section: step:summarize
+    output_schema: Summary
+output:
+  format: json
+  file: out/summary.json
+---
+
+## step:summarize
+
+Summarize the input into a short title and 2 bullet points.
+```
+
+**Schema Snippet (for Structured Output)**
+```python
+from pydantic import BaseModel
+
+
+class SummaryOutput(BaseModel):
+    title: str
+    bullets: list[str]
+```
+
+**Multi-Step Example (State + Structured Output)**
+```markdown
+---
+name: "Draft And Summarize"
+model:
+  provider: "openai-compatible"
+  base_url: "http://localhost:11434/v1"
+  api_key_env: "OPENAI_API_KEY"
+  model_name: "llama3"
+schemas:
+  Summary: "quick_agent.schemas.outputs:SummaryOutput"
+chain:
+  - id: draft
+    kind: text
+    prompt_section: step:draft
+  - id: summarize
+    kind: structured
+    prompt_section: step:summarize
+    output_schema: Summary
+output:
+  format: json
+  file: out/draft_summary.json
+---
+
+## step:draft
+
+Write a short draft based on the input.
+
+## step:summarize
+
+Summarize the draft from state as a title and 2 bullets.
+Use the value at state.steps.draft.
+```
+
+**Inter-Agent Call Example (agent.call)**
+```markdown
+---
+name: "Parent Agent"
+tools:
+  - "agent.call"
+chain:
+  - id: invoke_child
+    kind: text
+    prompt_section: step:invoke_child
+output:
+  format: json
+  file: out/parent.json
+---
+
+## step:invoke_child
+
+Call agent_call with agent "child" and input_file "{base_directory}/child_input.txt".
+Then respond with only the returned text value.
+```
+
+```markdown
+---
+name: "Child Agent"
+chain:
+  - id: respond
+    kind: text
+    prompt_section: step:respond
+output:
+  format: json
+  file: out/child.json
+---
+
+## step:respond
+
+Reply with exactly: pong
+```
+
+**Handoff Example (Run Another Agent After Output)**
+```markdown
+---
+name: "Writer With Handoff"
+chain:
+  - id: write
+    kind: text
+    prompt_section: step:write
+output:
+  format: json
+  file: out/writer.json
+handoff:
+  enabled: true
+  agent_id: "reviewer"
+---
+
+## step:write
+
+Write a short answer to the input.
+```
+
+```markdown
+---
+name: "Reviewer"
+chain:
+  - id: review
+    kind: text
+    prompt_section: step:review
+output:
+  format: json
+  file: out/reviewer.json
+---
+
+## step:review
+
+Review the input file produced by the writer and provide a brief critique.
+```
