@@ -10,12 +10,13 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.input_adaptors import InputAdaptor
 from quick_agent.tools_loader import load_tools
 
 
 class AgentTools:
     def __init__(self, tool_roots: list[Path]) -> None:
-        self._tool_roots = tool_roots
+        self._tool_roots: list[Path] = tool_roots
 
     def build_toolset(self, tool_ids: list[str], permissions: DirectoryPermissions) -> FunctionToolset[Any]:
         tool_ids_for_disk = [tool_id for tool_id in tool_ids if tool_id != "agent.call"]
@@ -28,7 +29,7 @@ class AgentTools:
         tool_ids: list[str],
         toolset: FunctionToolset[Any],
         run_input_source_path: str,
-        call_agent: Callable[[str, Path], Awaitable[BaseModel | str]],
+        call_agent: Callable[[str, InputAdaptor | Path], Awaitable[BaseModel | str]],
     ) -> None:
         if "agent.call" not in tool_ids:
             return

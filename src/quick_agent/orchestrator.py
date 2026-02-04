@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -16,13 +17,13 @@ from quick_agent.quick_agent import QuickAgent
 class Orchestrator:
     def __init__(
         self,
-        agent_roots: list[Path],
-        tool_roots: list[Path],
-        safe_dir: Path | None,
+        agent_roots: list[Path] | None = None,
+        tool_roots: list[Path] | None = None,
+        safe_dir: Optional[Path] = None,
     ) -> None:
-        self.registry = AgentRegistry(agent_roots)
-        self.tools = AgentTools(tool_roots)
-        self.directory_permissions = DirectoryPermissions(safe_dir)
+        self.registry: AgentRegistry = AgentRegistry(agent_roots or [])
+        self.tools: AgentTools = AgentTools(tool_roots or [])
+        self.directory_permissions: DirectoryPermissions = DirectoryPermissions(safe_dir)
 
     async def run(
         self,

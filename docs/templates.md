@@ -35,6 +35,7 @@ output:
 handoff:
   enabled: false
   agent_id: null
+nested_output: inline
 ---
 
 ## step:draft
@@ -57,7 +58,7 @@ Produce final structured output.
 
 Each step in `chain` must reference a matching `prompt_section` in the body:
 
-```
+```markdown
 ## step:<id>
 ```
 
@@ -88,9 +89,17 @@ The value must be a relative path.
 
 For structured steps, map schema names in `schemas` to import paths:
 
-```
+```yaml
 schemas:
   Output: "your_package.schemas:OutputModel"
 ```
 
 `output_schema` must reference one of those keys.
+
+## Nested Output
+
+Set `nested_output` to control whether agents invoked via `agent_call` or `handoff`
+write their output file.
+
+- `inline` (default): nested agents return output only; no file is written.
+- `file`: nested agents write their configured `output.file`.

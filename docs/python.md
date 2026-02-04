@@ -73,7 +73,7 @@ Then respond with only the returned text value.
 
 `input/child_input.txt`:
 
-```
+```text
 ignored
 ```
 
@@ -84,6 +84,27 @@ python agent.py --agent parent --input input/parent_input.txt
 ```
 
 Expected output: `pong`
+
+### Nested Calls Avoid Output Files
+
+By default, when an agent is invoked via `agent_call` or via `handoff`, the nested agent does not write its own
+`output.file`. Only the top-level agent run writes to its configured output path. The nested agent still returns
+its output to the caller.
+
+You can opt into file outputs for nested agents by setting `nested_output: file` in the parent agent front matter.
+
+### Inter-Agent Calls With Inline Text
+
+Instead of referencing a file, pass inline text directly:
+
+```markdown
+## step:invoke
+
+Call agent_call with agent "child" and input_text "hello from memory".
+Then respond with only the returned text value.
+```
+
+This uses the same `agent.call` tool but avoids creating a temporary input file.
 
 ## Input Adaptors
 

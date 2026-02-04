@@ -37,8 +37,8 @@ def load_agent_file(path: Path) -> LoadedAgentFile:
 
 
 class AgentRegistry:
-    def __init__(self, agent_roots: list[Path]):
-        self.agent_roots = agent_roots
+    def __init__(self, agent_roots: list[Path]) -> None:
+        self.agent_roots: list[Path] = agent_roots
         self._cache: dict[str, LoadedAgentFile] = {}
         self._index: dict[str, Path] | None = None
 

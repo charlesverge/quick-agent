@@ -1,5 +1,5 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 import pytest
 from quick_agent.orchestrator import Orchestrator
@@ -154,6 +154,9 @@ Use the extracted JSON from the chain state as the ContactInfo object.
     assert output.summary
     assert "Avery" in output.summary
     assert "Acme" in output.summary
+    assert output_path.exists()
+    file_output = ContactSummary.model_validate_json(output_path.read_text(encoding="utf-8"))
+    assert file_output.model_dump() == output.model_dump()
 
 
 def test_orchestrator_allows_agent_call_tool(tmp_path: Path) -> None:
@@ -187,6 +190,7 @@ Reply with exactly: pong
 name: Parent Agent
 tools:
   - "agent.call"
+nested_output: inline
 chain:
   - id: invoke
     kind: text
@@ -219,3 +223,132 @@ Then respond with only the returned text value.
 
     output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
     assert output == "pong"
+    assert not child_output.exists()
+
+
+def test_orchestrator_allows_agent_call_tool_with_inline_text(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+
+    child_output = safe_root / "out" / "child.json"
+    child_md = f"""---
+name: Child Agent
+chain:
+  - id: respond
+    kind: text
+    prompt_section: step:respond
+output:
+  format: json
+  file: {child_output}
+---
+
+## step:respond
+
+Reply with exactly: pong
+"""
+    (agents_dir / "child.md").write_text(child_md, encoding="utf-8")
+
+    parent_output = safe_root / "out" / "parent.json"
+    parent_md = f"""---
+name: Parent Agent
+tools:
+  - "agent.call"
+nested_output: inline
+chain:
+  - id: invoke
+    kind: text
+    prompt_section: step:invoke
+output:
+  format: json
+  file: {parent_output}
+---
+
+## step:invoke
+
+Call agent_call with agent "child" and input_text "hello from memory".
+Then respond with only the returned text value.
+"""
+    (agents_dir / "parent.md").write_text(parent_md, encoding="utf-8")
+
+    parent_input = safe_root / "parent_input.txt"
+    parent_input.write_text("call child", encoding="utf-8")
+
+    orchestrator = Orchestrator(
+        [agents_dir],
+        [tmp_path / "tools"],
+        safe_dir=safe_root,
+    )
+
+    import anyio
+
+    output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
+    assert output == "pong"
+    assert not child_output.exists()
+
+
+def test_orchestrator_allows_nested_output_file(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+
+    child_output = safe_root / "out" / "child.json"
+    child_md = f"""---
+name: Child Agent
+chain:
+  - id: respond
+    kind: text
+    prompt_section: step:respond
+output:
+  format: json
+  file: {child_output}
+---
+
+## step:respond
+
+Reply with exactly: pong
+"""
+    (agents_dir / "child.md").write_text(child_md, encoding="utf-8")
+
+    parent_output = safe_root / "out" / "parent.json"
+    parent_md = f"""---
+name: Parent Agent
+tools:
+  - "agent.call"
+nested_output: file
+chain:
+  - id: invoke
+    kind: text
+    prompt_section: step:invoke
+output:
+  format: json
+  file: {parent_output}
+---
+
+## step:invoke
+
+Call agent_call with agent "child" and input_text "hello from memory".
+Then respond with only the returned text value.
+"""
+    (agents_dir / "parent.md").write_text(parent_md, encoding="utf-8")
+
+    parent_input = safe_root / "parent_input.txt"
+    parent_input.write_text("call child", encoding="utf-8")
+
+    orchestrator = Orchestrator(
+        [agents_dir],
+        [tmp_path / "tools"],
+        safe_dir=safe_root,
+    )
+
+    import anyio
+
+    output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
+    assert output == "pong"
+    assert child_output.exists()

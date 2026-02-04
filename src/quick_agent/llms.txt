@@ -45,6 +45,7 @@
 - `docs/cli.md`: CLI usage and options.
 - `docs/templates.md`: agent template format and examples.
 - `docs/python.md`: embedding the orchestrator and inter-agent calls.
+- `docs/state.md`: how chain state is stored and used.
 
 **Mini Example Agent**
 ```markdown
@@ -163,6 +164,7 @@ Use the value at state.steps.draft.
 name: "Parent Agent"
 tools:
   - "agent.call"
+nested_output: inline
 chain:
   - id: invoke_child
     kind: text
@@ -194,6 +196,9 @@ output:
 
 Reply with exactly: pong
 ```
+
+Nested calls default to `nested_output: inline`, so the child agent above will not write
+`out/child.json` unless the parent sets `nested_output: file`.
 
 **Handoff Example (Run Another Agent After Output)**
 ```markdown
@@ -230,5 +235,5 @@ output:
 
 ## step:review
 
-Review the input file produced by the writer and provide a brief critique.
+Review the inline output produced by the writer and provide a brief critique.
 ```

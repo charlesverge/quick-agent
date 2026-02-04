@@ -26,6 +26,12 @@ class ValidationResult(BaseModel):
     summary: str | None = None
 
 
+class BusinessSummary(BaseModel):
+    company_name: str
+    location: str
+    summary: str
+
+
 class EvalRowResult(BaseModel):
     index: int = 0
     agent: str

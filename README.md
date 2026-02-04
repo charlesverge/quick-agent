@@ -5,6 +5,7 @@ Quick Agent is a minimal, local-first agent runner that loads agent definitions 
 ## Project Goal
 
 Provide a simple, maintainable agent framework that:
+
 - Uses Markdown front matter for agent configuration.
 - Runs a deterministic chain of steps (text or structured output).
 - Keeps context handling deliberately limited and predictable.
@@ -178,7 +179,7 @@ def main() -> None:
         tools=tools,
         directory_permissions=permissions,
         agent_id="hello",
-        input_path=Path("safe/path/to/input.txt"),
+        input_data=Path("safe/path/to/input.txt"),
         extra_tools=None,
     )
 
@@ -199,6 +200,17 @@ Agents are stored as Markdown files with YAML front matter and step sections:
 
 The orchestrator loads the agent, builds the tools, and executes each step in order, writing the final output to disk.
 
+## Nested Output
+
+When an agent invokes another agent via `agent_call` or `handoff`, the nested agent can either write its
+own `output.file` or return output inline only. Configure this in the parent agent front matter:
+
+```yaml
+nested_output: inline  # default, no output file for nested calls
+```
+
+Use `nested_output: file` to allow nested agents to write their configured output files.
+
 ## Documentation
 
 See the docs in `docs/`:
@@ -208,11 +220,3 @@ See the docs in `docs/`:
 - [docs/python.md](docs/python.md): Embedding the orchestrator in scripts.
 - [docs/python.md#inter-agent-calls](docs/python.md#inter-agent-calls): Example of one agent calling another.
 - [src/quick_agent/llms.txt](src/quick_agent/llms.txt): LLM-oriented project summary and examples.
-
-Access the packaged `llms.txt` at runtime:
-
-```python
-from importlib.resources import files
-
-llms_path = files("quick_agent") / "llms.txt"
-```

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from quick_agent.models.chain_step_spec import ChainStepSpec
@@ -19,4 +21,5 @@ class AgentSpec(BaseModel):
     chain: list[ChainStepSpec]
     output: OutputSpec = Field(default_factory=OutputSpec)
     handoff: HandoffSpec = Field(default_factory=HandoffSpec)
+    nested_output: Literal["inline", "file"] = "inline"
     safe_dir: str | None = None

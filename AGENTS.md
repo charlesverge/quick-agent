@@ -7,4 +7,6 @@
 - Do not use `sys.path.insert` unless explicitly asked for.
 - Do not use `# type: ignore` unless explicitly asked for.
 - Do not re-export symbols; import from the correct module instead. Re-exports from `__init__.py` are allowed.
+- When edit .md files a new line should follow headers (e.g., `## Header`).
+- Documentation must be derived from this project’s source files or included docs (no generic filler).
 </INSTRUCTIONS>

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from quick_agent.models.run_input import RunInput
 
 
-def make_user_prompt(step_prompt: str, run_input: RunInput, state: dict[str, Any]) -> str:
+def make_user_prompt(step_prompt: str, run_input: RunInput, state: Mapping[str, Any]) -> str:
     """
     Creates a consistent user prompt payload. Consistency helps prefix-caching backends.
     """
