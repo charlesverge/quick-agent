@@ -17,7 +17,8 @@ python -m quick_agent.cli --agent example --input path/to/input.txt
 ## CLI Options
 
 - `--agent` (required): Agent id (filename without `.md`).
-- `--input` (required): Input file path. Supports `.txt`, `.md`, and `.json`.
+- `--input`: Input file path (mutually exclusive with `--input-text`). Supports `.txt`, `.md`, and `.json`.
+- `--input-text`: Raw input text (mutually exclusive with `--input`).
 - `--agents-dir`: Directory to search for user agents. Default: `agents`.
 - `--tools-dir`: Directory to search for user tools. Default: `tools`.
 - `--safe-dir`: Root directory for file access. Default: `safe`.
@@ -31,6 +32,7 @@ File reads and writes for agent input/output and filesystem tools are restricted
 - Paths outside the safe directory raise `PermissionError`.
 - Relative paths are resolved inside the safe directory.
 - Agents can further scope access with `safe_dir` in frontmatter (relative to the safe root).
+- If no safe directory is configured, all reads and writes are denied.
 
 ## Agent Search Order
 

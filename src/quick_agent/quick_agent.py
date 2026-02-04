@@ -16,7 +16,8 @@ from pydantic_ai.toolsets import FunctionToolset
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
-from quick_agent.io_utils import load_input, write_output
+from quick_agent.input_adaptors import FileInput, InputAdaptor
+from quick_agent.io_utils import write_output
 from quick_agent.json_utils import extract_first_json_object
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
@@ -32,14 +33,14 @@ class QuickAgent:
         tools: AgentTools,
         directory_permissions: DirectoryPermissions,
         agent_id: str,
-        input_path: Path,
+        input_data: InputAdaptor | Path,
         extra_tools: list[str] | None,
     ) -> None:
         self._registry = registry
         self._tools = tools
         self._directory_permissions = directory_permissions
         self._agent_id = agent_id
-        self._input_path = input_path
+        self._input_data = input_data
         self._extra_tools = extra_tools
 
         self.loaded = self._registry.get(self._agent_id)
@@ -47,7 +48,11 @@ class QuickAgent:
         if safe_dir is not None and Path(safe_dir).is_absolute():
             raise ValueError("safe_dir must be a relative path.")
         self.permissions = self._directory_permissions.scoped(safe_dir)
-        self.run_input = load_input(self._input_path, self.permissions)
+        if isinstance(self._input_data, InputAdaptor):
+            input_adaptor = self._input_data
+        else:
+            input_adaptor = FileInput(self._input_data, self.permissions)
+        self.run_input = input_adaptor.load()
 
         self.tool_ids = list(dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or [])))
         self.toolset = self._tools.build_toolset(self.tool_ids, self.permissions)
@@ -85,7 +90,7 @@ class QuickAgent:
             tools=self._tools,
             directory_permissions=self._directory_permissions,
             agent_id=agent_id,
-            input_path=input_path,
+            input_data=input_path,
             extra_tools=None,
         )
         return await agent.run()

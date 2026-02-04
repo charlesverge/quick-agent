@@ -45,6 +45,16 @@ def test_directory_permissions_can_read_write(tmp_path: Path) -> None:
     assert perms.can_write(Path("../nope.txt")) is False
 
 
+def test_directory_permissions_without_root_denies_all() -> None:
+    perms = DirectoryPermissions(None)
+
+    with pytest.raises(PermissionError):
+        perms.resolve(Path("anything.txt"), for_write=False)
+
+    assert perms.can_read(Path("anything.txt")) is False
+    assert perms.can_write(Path("anything.txt")) is False
+
+
 def test_agent_cannot_write_outside_scoped_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

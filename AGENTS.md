@@ -6,5 +6,5 @@
 - Do not define nested functions inside other functions or methods unless explicitly asked for.
 - Do not use `sys.path.insert` unless explicitly asked for.
 - Do not use `# type: ignore` unless explicitly asked for.
-- Do not re-export symbols; import from the correct module instead.
+- Do not re-export symbols; import from the correct module instead. Re-exports from `__init__.py` are allowed.
 </INSTRUCTIONS>

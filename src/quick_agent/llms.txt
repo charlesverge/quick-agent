@@ -14,6 +14,7 @@
 - `QuickAgent` loads the agent spec, scopes file permissions, builds the toolset, then runs each chain step (text or structured).
 - Structured steps validate JSON output against a Pydantic schema and attempt extraction if the raw output contains extra text.
 - Outputs are written via `io_utils.write_output` and constrained by `DirectoryPermissions`.
+- Input handling uses adaptors: file inputs are permission-checked at creation, and text inputs bypass filesystem access.
 
 **Key Files**
 - `src/quick_agent/quick_agent.py`: core execution engine and step handling.
@@ -34,6 +35,7 @@
 **Safety and Permissions**
 - File reads and writes are restricted to a safe directory configured by `--safe-dir` (default `safe`).
 - Agent-level `safe_dir` can further restrict access to a subdirectory.
+- If no safe directory is configured, all reads and writes are denied.
 
 **Tests**
 - Tests live in `src/tests`.
@@ -102,6 +104,23 @@ from pydantic import BaseModel
 class SummaryOutput(BaseModel):
     title: str
     bullets: list[str]
+```
+
+**Input Adaptors (Python)**
+```python
+from pathlib import Path
+
+from quick_agent import FileInput
+from quick_agent import Orchestrator
+from quick_agent import TextInput
+
+orchestrator = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
+
+file_input = FileInput(Path("safe/input.txt"), orchestrator.directory_permissions)
+text_input = TextInput("hello from memory")
+
+result_from_file = await orchestrator.run("example", file_input)
+result_from_text = await orchestrator.run("example", text_input)
 ```
 
 **Multi-Step Example (State + Structured Output)**

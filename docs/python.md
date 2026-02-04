@@ -85,6 +85,48 @@ python agent.py --agent parent --input input/parent_input.txt
 
 Expected output: `pong`
 
+## Input Adaptors
+
+The orchestrator can accept either a file path or an input adaptor instance.
+
+### FileInput (permission-checked)
+
+Use `FileInput` when your input comes from a file and should be validated against the safe directory at creation time.
+
+```python
+from pathlib import Path
+
+from quick_agent import FileInput
+from quick_agent import Orchestrator
+
+safe_root = Path("safe")
+orchestrator = Orchestrator([Path("agents")], [Path("tools")], safe_dir=safe_root)
+
+input_adaptor = FileInput(Path("safe/input.txt"), orchestrator.directory_permissions)
+result = await orchestrator.run("example", input_adaptor)
+```
+
+### TextInput (no filesystem access)
+
+Use `TextInput` for inline strings. No permissions are required.
+
+```python
+from pathlib import Path
+
+from quick_agent import Orchestrator
+from quick_agent import TextInput
+
+orchestrator = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
+input_adaptor = TextInput("hello from memory")
+result = await orchestrator.run("example", input_adaptor)
+```
+
+### Permission Behavior
+
+- If the orchestrator safe dir is `None`, all reads and writes are denied.
+- `FileInput` performs its permission check at construction time.
+- `TextInput` never touches the filesystem and is always allowed.
+
 ## Including Packaged System Agents And Tools
 
 When installed as a module, packaged system assets live inside the

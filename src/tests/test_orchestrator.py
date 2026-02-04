@@ -11,6 +11,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent import quick_agent as qa_module
 from quick_agent import agent_tools as tools_module
+from quick_agent import input_adaptors as input_adaptors_module
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
@@ -722,7 +723,7 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     write_output_recorder = SyncCallRecorder(return_value=out_path)
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
-    monkeypatch.setattr(qa_module, "load_input", load_input_recorder)
+    monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
     monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
     monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
@@ -739,7 +740,7 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
         tools=tools,
         directory_permissions=_permissions(tmp_path),
         agent_id="agent-1",
-        input_path=tmp_path / "input.json",
+        input_data=tmp_path / "input.json",
         extra_tools=["tool.b"],
     )
 
