@@ -53,9 +53,9 @@ class QuickAgent:
         self._agent_id: str = agent_id
         self._input_data: InputAdaptor | Path = input_data
         self._extra_tools: list[str] | None = extra_tools
-        self._write_output_file: bool = write_output
-
         self.loaded: LoadedAgentFile = self._registry.get(self._agent_id)
+        output_file = self.loaded.spec.output.file
+        self._write_output_file: bool = write_output and bool(output_file)
         safe_dir = self.loaded.spec.safe_dir
         if safe_dir is not None and Path(safe_dir).is_absolute():
             raise ValueError("safe_dir must be a relative path.")
@@ -208,16 +208,21 @@ class QuickAgent:
             self.model,
             instructions=self.loaded.body,
             toolsets=[self.toolset],
-            output_type=str,
+            output_type=schema_cls,
             model_settings=model_settings,
         )
         result = await agent.run(user_prompt)
         raw_output = result.output
-        try:
-            parsed = schema_cls.model_validate_json(raw_output)
-        except ValidationError:
-            extracted = extract_first_json_object(raw_output)
-            parsed = schema_cls.model_validate_json(extracted)
+        if isinstance(raw_output, BaseModel):
+            parsed = raw_output
+        elif isinstance(raw_output, dict):
+            parsed = schema_cls.model_validate(raw_output)
+        else:
+            try:
+                parsed = schema_cls.model_validate_json(raw_output)
+            except ValidationError:
+                extracted = extract_first_json_object(raw_output)
+                parsed = schema_cls.model_validate_json(extracted)
         return parsed.model_dump(), parsed
 
     async def _run_chain(
@@ -234,7 +239,10 @@ class QuickAgent:
         return final_output
 
     def _write_final_output(self, final_output: BaseModel | str) -> Path:
-        out_path = Path(self.loaded.spec.output.file)
+        output_file = self.loaded.spec.output.file
+        if not output_file:
+            raise ValueError("Output file is not configured.")
+        out_path = Path(output_file)
         if isinstance(final_output, BaseModel):
             if self.loaded.spec.output.format == "json":
                 write_output(out_path, final_output.model_dump_json(indent=2), self.permissions)

@@ -98,5 +98,5 @@ Use `state.steps.company_name` and `state.steps.location` for the fields if avai
 
 After the chain completes:
 
-- If output writing is enabled, the final output is written to the configured `output.file`.
+- If output writing is enabled and `output.file` is set, the final output is written to the configured file.
 - If handoff is enabled, the final output is passed to the next agent. Structured outputs are serialized as JSON before handoff.

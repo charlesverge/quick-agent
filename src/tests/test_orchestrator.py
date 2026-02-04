@@ -510,6 +510,8 @@ async def test_run_step_structured_parses_json_with_fallback(monkeypatch: pytest
     assert output == {"x": 7}
     assert isinstance(final, ExampleSchema)
     assert final.x == 7
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["output_type"] is ExampleSchema
 
 
 @pytest.mark.anyio
@@ -848,6 +850,60 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     write_args, write_kwargs = write_output_recorder.calls[0]
     assert write_kwargs == {}
     assert write_args[0] == "final"
+    assert handoff_recorder.calls == [{"args": ("final",), "kwargs": {}}]
+
+
+@pytest.mark.anyio
+async def test_run_skips_write_when_output_file_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+
+    run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
+    toolset = RecordingToolset()
+    model = object()
+
+    load_input_recorder = SyncCallRecorder(return_value=run_input)
+    build_model_recorder = SyncCallRecorder(return_value=model)
+    build_toolset_recorder = SyncCallRecorder(return_value=toolset)
+    build_settings_recorder = SyncCallRecorder(return_value=None)
+    maybe_inject_recorder = SyncCallRecorder(return_value=None)
+    run_chain_recorder = AsyncCallRecorder(return_value="final")
+    write_output_recorder = SyncCallRecorder(return_value=tmp_path / "out.json")
+    handoff_recorder = AsyncCallRecorder(return_value=None)
+
+    monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
+    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
+    monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
+    monkeypatch.setattr(QuickAgent, "_write_final_output", write_output_recorder)
+    monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
+
+    tools = AgentTools([tmp_path])
+    monkeypatch.setattr(tools, "build_toolset", build_toolset_recorder)
+    monkeypatch.setattr(tools, "maybe_inject_agent_call", maybe_inject_recorder)
+    fake_registry = FakeRegistry(loaded)
+
+    agent = QuickAgent(
+        registry=fake_registry,
+        tools=tools,
+        directory_permissions=_permissions(tmp_path),
+        agent_id="agent-1",
+        input_data=tmp_path / "input.json",
+        extra_tools=None,
+    )
+
+    result = await agent.run()
+
+    assert result == "final"
+    assert write_output_recorder.calls == []
     assert handoff_recorder.calls == [{"args": ("final",), "kwargs": {}}]
 
 

@@ -96,6 +96,10 @@ schemas:
 
 `output_schema` must reference one of those keys.
 
+## Output
+
+If `output.file` is omitted, the final output is returned inline and no file is written.
+
 ## Nested Output
 
 Set `nested_output` to control whether agents invoked via `agent_call` or `handoff`

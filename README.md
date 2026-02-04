@@ -199,6 +199,7 @@ Agents are stored as Markdown files with YAML front matter and step sections:
 - Body contains `## step:<id>` sections referenced by the chain.
 
 The orchestrator loads the agent, builds the tools, and executes each step in order, writing the final output to disk.
+If the agent front matter omits `output.file`, the orchestrator returns the final output without writing a file.
 
 ## Nested Output
 
@@ -217,6 +218,7 @@ See the docs in `docs/`:
 
 - [docs/cli.md](docs/cli.md): Command line usage and options.
 - [docs/templates.md](docs/templates.md): Agent template format and examples.
+- [docs/outputs.md](docs/outputs.md): Output configuration and behavior.
 - [docs/python.md](docs/python.md): Embedding the orchestrator in scripts.
 - [docs/python.md#inter-agent-calls](docs/python.md#inter-agent-calls): Example of one agent calling another.
 - [src/quick_agent/llms.txt](src/quick_agent/llms.txt): LLM-oriented project summary and examples.

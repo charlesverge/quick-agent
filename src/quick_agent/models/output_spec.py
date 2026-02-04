@@ -7,4 +7,4 @@ from pydantic import BaseModel
 
 class OutputSpec(BaseModel):
     format: str = "json"  # "json" or "markdown"
-    file: str = "out/result.json"
+    file: str | None = None

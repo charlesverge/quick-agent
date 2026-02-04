@@ -3,7 +3,7 @@
 **Project Summary**
 - Quick Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter and executes a small chain of steps with bounded context.
 - Agents are Markdown files with YAML front matter for model/tools/chain and `## step:<id>` sections for prompts.
-- Execution is deterministic: steps run in order, state stores prior step outputs, final output is written to disk, and optional handoff can invoke another agent.
+- Execution is deterministic: steps run in order, state stores prior step outputs, and optional handoff can invoke another agent. If `output.file` is set, the final output is written to disk.
 
 **Primary Entry Points**
 - CLI: `quick-agent --agent <id> --input <path>` (module: `quick_agent.cli:main`).
