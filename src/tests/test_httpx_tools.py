@@ -71,6 +71,10 @@ def _chat_completion_response(model_name: str) -> dict[str, Any]:
     }
 
 
+def _messages_by_role(messages: list[dict[str, Any]], role: str) -> list[dict[str, Any]]:
+    return [message for message in messages if message.get("role") == role]
+
+
 @pytest.mark.anyio
 async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -176,3 +180,112 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
     assert isinstance(tools_json, list)
     assert tools_json
     assert tools_json[0]["function"]["name"] == "dummy_tool"
+
+
+@pytest.mark.anyio
+async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response("gpt-5")
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+        model = OpenAIChatModel("gpt-5", provider=provider)
+        monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
+
+        spec = AgentSpec(
+            name="test",
+            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            chain=[],
+            tools=[],
+            output=OutputSpec(file=None),
+        )
+        loaded = LoadedAgentFile.from_parts(
+            spec=spec,
+            instructions="",
+            system_prompt="You are concise.",
+            step_prompts={},
+        )
+
+        registry = StaticRegistry(loaded)
+        tools = AgentTools([])
+        permissions = DirectoryPermissions(tmp_path)
+
+        agent = QuickAgent(
+            registry=registry,
+            tools=tools,
+            directory_permissions=permissions,
+            agent_id="agent-1",
+            input_data=TextInput("hello"),
+            extra_tools=None,
+            write_output=False,
+        )
+
+        result = await agent.run()
+
+    assert result == "ok"
+    assert recorder.last_json is not None
+    messages = recorder.last_json.get("messages")
+    assert isinstance(messages, list)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == "You are concise."
+    assert messages[-1]["role"] == "user"
+    assert "# Task Input" in messages[-1]["content"]
+    assert "## Step Instructions" not in messages[-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_single_shot_no_steps_instructions_only_includes_instructions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response("gpt-5")
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+        model = OpenAIChatModel("gpt-5", provider=provider)
+        monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
+
+        spec = AgentSpec(
+            name="test",
+            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            chain=[],
+            tools=[],
+            output=OutputSpec(file=None),
+        )
+        loaded = LoadedAgentFile.from_parts(
+            spec=spec,
+            instructions="Use the tool.",
+            system_prompt="",
+            step_prompts={},
+        )
+
+        registry = StaticRegistry(loaded)
+        tools = AgentTools([])
+        permissions = DirectoryPermissions(tmp_path)
+
+        agent = QuickAgent(
+            registry=registry,
+            tools=tools,
+            directory_permissions=permissions,
+            agent_id="agent-1",
+            input_data=TextInput("hello"),
+            extra_tools=None,
+            write_output=False,
+        )
+
+        result = await agent.run()
+
+    assert result == "ok"
+    assert recorder.last_json is not None
+    messages = recorder.last_json.get("messages")
+    assert isinstance(messages, list)
+    system_messages = _messages_by_role(messages, "system")
+    system_contents = [message.get("content") for message in system_messages]
+    assert "Use the tool." in system_contents
+    assert messages[-1]["role"] == "user"
+    assert "# Task Input" in messages[-1]["content"]
+    assert "## Step Instructions" not in messages[-1]["content"]

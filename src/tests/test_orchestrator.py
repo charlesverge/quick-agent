@@ -27,6 +27,7 @@ from quick_agent.orchestrator import Orchestrator
 from quick_agent.quick_agent import QuickAgent
 from quick_agent.quick_agent import build_model
 from quick_agent.quick_agent import resolve_schema
+from quick_agent.prompting import make_user_prompt
 
 
 class DummyProvider:
@@ -415,26 +416,6 @@ def test_build_structured_model_settings_openai_injects_schema() -> None:
     assert json_schema_obj["strict"] is True
 
 
-def test_build_user_prompt_raises_for_missing_section() -> None:
-    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:missing")
-    loaded = LoadedAgentFile.from_parts(
-        spec=_make_loaded_with_chain([step]).spec,
-        instructions="body",
-        system_prompt="",
-        step_prompts={},
-    )
-    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
-
-    qa = object.__new__(QuickAgent)
-    qa.loaded = loaded
-    qa.run_input = run_input
-    qa.state = {"agent_id": "agent-1", "steps": {}, "final_output": None}
-    with pytest.raises(KeyError):
-        qa._build_user_prompt(
-            step=step,
-        )
-
-
 def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> None:
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
@@ -446,17 +427,38 @@ def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> No
     qa.loaded = loaded
     qa.run_input = run_input
     qa.state = {"agent_id": "agent-1", "steps": {}, "final_output": None}
-    result = qa._build_user_prompt(
-        step=step,
-    )
+    result = qa._build_user_prompt()
 
     assert result == "prompt"
     assert recorder.calls == [
         (
-            (loaded.step_prompts["step:one"], run_input, {"agent_id": "agent-1", "steps": {}, "final_output": None}),
+            (run_input, {"agent_id": "agent-1", "steps": {}, "final_output": None}),
             {},
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_run_text_step_raises_for_missing_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:missing")
+    loaded = _make_loaded_with_chain([step])
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    with pytest.raises(KeyError):
+        await qa._run_text_step(
+            step=step,
+        )
 
 
 @pytest.mark.anyio
@@ -483,7 +485,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     assert output == "hello"
     assert final == "hello"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "system"
+    assert FakeAgent.last_init["instructions"] == "system\n\n## Step Instructions\ndo thing"
     assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_init["output_type"] is str
 
@@ -603,6 +605,129 @@ async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPa
     assert output == "ok"
     assert final == "ok"
     assert FakeAgent.last_prompt == "prompt"
+
+
+@pytest.mark.anyio
+async def test_run_text_step_no_instructions_or_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "ok"
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output, final = await qa._run_text_step(
+        step=step,
+    )
+
+    assert output == "ok"
+    assert final == "ok"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["instructions"] == "## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+
+
+@pytest.mark.anyio
+async def test_run_text_step_system_prompt_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "ok"
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="You are concise.",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output, final = await qa._run_text_step(
+        step=step,
+    )
+
+    assert output == "ok"
+    assert final == "ok"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["instructions"] == "## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["system_prompt"] == "You are concise."
+    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+
+
+@pytest.mark.anyio
+async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "ok"
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Use the tool.",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output, final = await qa._run_text_step(
+        step=step,
+    )
+
+    assert output == "ok"
+    assert final == "ok"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["instructions"] == "Use the tool.\n\n## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
@@ -734,6 +859,80 @@ async def test_run_chain_updates_state_and_returns_last() -> None:
     assert qa.state["steps"] == {"s1": {"a": 1}, "s2": "b"}
     assert qa.state["final_output"] == "b"
     assert qa.calls == ["s1", "s2"]
+
+
+@pytest.mark.anyio
+async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "hello"
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="You are concise.",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_chain()
+
+    assert output == "hello"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["instructions"] == ""
+    assert FakeAgent.last_init["system_prompt"] == "You are concise."
+    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+
+
+@pytest.mark.anyio
+async def test_run_chain_single_shot_instructions_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "hello"
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Use the tool.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_chain()
+
+    assert output == "hello"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["instructions"] == "Use the tool."
+    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
 def test_write_final_output_serializes_model(tmp_path: Path) -> None:

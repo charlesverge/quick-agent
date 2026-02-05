@@ -80,7 +80,7 @@ def test_write_output_creates_parent(tmp_path: Path) -> None:
 
 def test_make_user_prompt_contains_sections() -> None:
     run_input = RunInput(source_path="file.txt", kind="text", text="hi", data=None)
-    prompt = prompting.make_user_prompt("do thing", run_input, {"x": 1})
+    prompt = prompting.make_user_prompt(run_input, {"x": 1})
 
     assert "# Task Input" in prompt
     assert "source_path: file.txt" in prompt
@@ -88,8 +88,6 @@ def test_make_user_prompt_contains_sections() -> None:
     assert "hi" in prompt
     assert "## Chain State (JSON)" in prompt
     assert '"x": 1' in prompt
-    assert "## Step Instructions" in prompt
-    assert "do thing" in prompt
 
 
 def test_resolve_schema_valid_missing_and_invalid() -> None:

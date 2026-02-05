@@ -163,25 +163,38 @@ class QuickAgent:
 
         raise NotImplementedError(f"Unknown step kind: {step.kind}")
 
-    def _build_user_prompt(
-        self,
-        *,
-        step: ChainStepSpec,
-    ) -> str:
-        if step.prompt_section not in self.loaded.step_prompts:
-            raise KeyError(f"Missing step section {step.prompt_section!r} in agent.md instructions.")
+    def _build_user_prompt(self) -> str:
+        return make_user_prompt(self.run_input, self.state)
 
-        step_prompt = self.loaded.step_prompts[step.prompt_section]
-        return make_user_prompt(step_prompt, self.run_input, self.state)
+    def _build_step_instructions(self, step_prompt: str) -> str:
+        if not self.loaded.instructions:
+            return f"## Step Instructions\n{step_prompt}"
+        return f"{self.loaded.instructions}\n\n## Step Instructions\n{step_prompt}"
+
+    def _build_single_shot_prompt(self) -> str:
+        return make_user_prompt(self.run_input, self.state)
 
     async def _run_text_step(
         self,
         *,
         step: ChainStepSpec,
     ) -> tuple[StepOutput, BaseModel | str]:
-        user_prompt = self._build_user_prompt(
-            step=step,
+        user_prompt = self._build_user_prompt()
+        step_prompt = self.loaded.step_prompts[step.prompt_section]
+        step_instructions = self._build_step_instructions(step_prompt)
+        toolsets = self._toolsets_for_run()
+        agent = Agent(
+            self.model,
+            instructions=step_instructions,
+            system_prompt=self.loaded.system_prompt,
+            toolsets=toolsets,
+            output_type=str,
         )
+        result = await agent.run(user_prompt)
+        return result.output, result.output
+
+    async def _run_single_shot(self) -> BaseModel | str:
+        user_prompt = self._build_single_shot_prompt()
         toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,
@@ -191,7 +204,7 @@ class QuickAgent:
             output_type=str,
         )
         result = await agent.run(user_prompt)
-        return result.output, result.output
+        return result.output
 
     async def _run_structured_step(
         self,
@@ -204,13 +217,13 @@ class QuickAgent:
 
         model_settings = self._build_structured_model_settings(schema_cls=schema_cls)
 
-        user_prompt = self._build_user_prompt(
-            step=step,
-        )
+        user_prompt = self._build_user_prompt()
+        step_prompt = self.loaded.step_prompts[step.prompt_section]
+        step_instructions = self._build_step_instructions(step_prompt)
         toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,
-            instructions=self.loaded.instructions,
+            instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             toolsets=toolsets,
             output_type=schema_cls,
@@ -233,6 +246,8 @@ class QuickAgent:
     async def _run_chain(
         self,
     ) -> BaseModel | str:
+        if not self.loaded.spec.chain:
+            return await self._run_single_shot()
         final_output: BaseModel | str = ""
         for step in self.loaded.spec.chain:
             step_out, step_final = await self._run_step(

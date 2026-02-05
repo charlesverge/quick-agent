@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from quick_agent.models.run_input import RunInput
 
 
-def make_user_prompt(step_prompt: str, run_input: RunInput, state: Mapping[str, Any]) -> str:
+def make_user_prompt(run_input: RunInput, state: Mapping[str, Any]) -> str:
     """
     Creates a consistent user prompt payload. Consistency helps prefix-caching backends.
     """
@@ -22,7 +22,4 @@ kind: {run_input.kind}
 
 ## Chain State (JSON)
 {json.dumps(state, indent=2)}
-
-## Step Instructions
-{step_prompt}
 """
