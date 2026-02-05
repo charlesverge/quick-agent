@@ -485,7 +485,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     assert output == "hello"
     assert final == "hello"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "system\n\n## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["instructions"] == "systemdo thing"
     assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_init["output_type"] is str
 
@@ -643,7 +643,7 @@ async def test_run_text_step_no_instructions_or_system_prompt(monkeypatch: pytes
     assert output == "ok"
     assert final == "ok"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["instructions"] == "do thing"
     assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
@@ -684,7 +684,7 @@ async def test_run_text_step_system_prompt_only(monkeypatch: pytest.MonkeyPatch)
     assert output == "ok"
     assert final == "ok"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["instructions"] == "do thing"
     assert FakeAgent.last_init["system_prompt"] == "You are concise."
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
@@ -725,7 +725,7 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
     assert output == "ok"
     assert final == "ok"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "Use the tool.\n\n## Step Instructions\ndo thing"
+    assert FakeAgent.last_init["instructions"] == "Use the tool.do thing"
     assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 

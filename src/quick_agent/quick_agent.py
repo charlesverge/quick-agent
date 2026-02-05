@@ -168,8 +168,8 @@ class QuickAgent:
 
     def _build_step_instructions(self, step_prompt: str) -> str:
         if not self.loaded.instructions:
-            return f"## Step Instructions\n{step_prompt}"
-        return f"{self.loaded.instructions}\n\n## Step Instructions\n{step_prompt}"
+            return step_prompt
+        return f"{self.loaded.instructions}{step_prompt}"
 
     def _build_single_shot_prompt(self) -> str:
         return make_user_prompt(self.run_input, self.state)
