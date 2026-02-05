@@ -78,6 +78,7 @@ class FakeAgent:
         self,
         model: Any,
         instructions: str,
+        system_prompt: str,
         toolsets: list[Any],
         output_type: Any,
         model_settings: Any | None = None,
@@ -85,6 +86,7 @@ class FakeAgent:
         FakeAgent.last_init = {
             "model": model,
             "instructions": instructions,
+            "system_prompt": system_prompt,
             "toolsets": toolsets,
             "output_type": output_type,
             "model_settings": model_settings,
@@ -188,7 +190,12 @@ def _make_loaded_with_chain(
         output=output or OutputSpec(file="out/result.json"),
         handoff=handoff or HandoffSpec(),
     )
-    return LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    return LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
 
 
 def _permissions(tmp_path: Path | None = None) -> DirectoryPermissions:
@@ -237,7 +244,7 @@ def test_resolve_schema_valid_missing_and_invalid() -> None:
         chain=[ChainStepSpec(id="s1", kind="text", prompt_section="step:one")],
         schemas={"Good": "schemas.orch:GoodSchema", "Bad": "schemas.orch:NotSchema"},
     )
-    loaded = LoadedAgentFile(spec=spec, body="", step_prompts={})
+    loaded = LoadedAgentFile.from_parts(spec=spec, instructions="", system_prompt="", step_prompts={})
 
     try:
         assert resolve_schema(loaded, "Good") is GoodSchema
@@ -410,7 +417,12 @@ def test_build_structured_model_settings_openai_injects_schema() -> None:
 
 def test_build_user_prompt_raises_for_missing_section() -> None:
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:missing")
-    loaded = LoadedAgentFile(spec=_make_loaded_with_chain([step]).spec, body="body", step_prompts={})
+    loaded = LoadedAgentFile.from_parts(
+        spec=_make_loaded_with_chain([step]).spec,
+        instructions="body",
+        system_prompt="",
+        step_prompts={},
+    )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
     qa = object.__new__(QuickAgent)
@@ -461,6 +473,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     qa.model = cast(OpenAIChatModel, object())
     qa.model_settings_json = None
     qa.toolset = RecordingToolset()
+    qa.tool_ids = []
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
     output, final = await qa._run_step(
@@ -471,7 +484,34 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     assert final == "hello"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "system"
+    assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_init["output_type"] is str
+
+
+@pytest.mark.anyio
+async def test_run_text_step_omits_tools_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "hello"
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step])
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    qa = object.__new__(QuickAgent)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_settings_json = None
+    qa.toolset = RecordingToolset()
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    qa.tool_ids = []
+
+    await qa._run_text_step(
+        step=step,
+    )
+
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["toolsets"] == []
 
 
 @pytest.mark.anyio
@@ -490,7 +530,12 @@ async def test_run_step_structured_parses_json_with_fallback(monkeypatch: pytest
         chain=[step],
         schemas={"Example": "schemas.struct:ExampleSchema"},
     )
-    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
@@ -499,6 +544,7 @@ async def test_run_step_structured_parses_json_with_fallback(monkeypatch: pytest
         qa.model = cast(OpenAIChatModel, object())
         qa.model_settings_json = {"extra_body": {"format": "json"}}
         qa.toolset = RecordingToolset()
+        qa.tool_ids = []
         qa.run_input = run_input
         qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
         output, final = await qa._run_step(
@@ -546,6 +592,7 @@ async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPa
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
     qa.toolset = RecordingToolset()
+    qa.tool_ids = []
     qa.run_input = run_input
     monkeypatch.setattr(qa, "_build_user_prompt", SyncCallRecorder(return_value="prompt"))
 
@@ -592,7 +639,12 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
         chain=[step],
         schemas={"Example": "schemas.struct2:ExampleSchema"},
     )
-    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
@@ -601,6 +653,7 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
         qa.model = cast(OpenAIChatModel, object())
         qa.model_settings_json = None
         qa.toolset = RecordingToolset()
+        qa.tool_ids = []
         qa.run_input = run_input
         qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
         output, final = await qa._run_structured_step(
@@ -629,7 +682,12 @@ async def test_run_structured_step_adds_json_schema_for_openai(monkeypatch: pyte
         chain=[step],
         schemas={"Example": "schemas.struct3:ExampleSchema"},
     )
-    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
@@ -638,6 +696,7 @@ async def test_run_structured_step_adds_json_schema_for_openai(monkeypatch: pyte
         qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
         qa.model_settings_json = None
         qa.toolset = RecordingToolset()
+        qa.tool_ids = []
         qa.run_input = run_input
         qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
         await qa._run_structured_step(
@@ -770,7 +829,12 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
         tools=["tool.a", "agent.call", "tool.a"],
         output=OutputSpec(file=str(tmp_path / "out.json")),
     )
-    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
 
     run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
     toolset = RecordingToolset()
@@ -821,6 +885,8 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     assert load_args[1].root == _permissions(tmp_path).root
     assert build_model_recorder.calls == [((loaded.spec.model,), {})]
 
+    assert build_settings_recorder.calls == [((loaded.spec.model,), {})]
+
     assert build_toolset_recorder.calls
     args, kwargs = build_toolset_recorder.calls[0]
     assert kwargs == {}
@@ -831,7 +897,6 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     ]
     assert isinstance(args[1], DirectoryPermissions)
 
-    assert build_settings_recorder.calls == [((loaded.spec.model,), {})]
     maybe_args, maybe_kwargs = maybe_inject_recorder.calls[0]
     assert maybe_kwargs == {}
     assert maybe_args[0] == [
@@ -864,7 +929,12 @@ async def test_run_skips_write_when_output_file_missing(
         chain=[step],
         output=OutputSpec(file=None),
     )
-    loaded = LoadedAgentFile(spec=spec, body="system", step_prompts={"step:one": "do thing"})
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
 
     run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
     toolset = RecordingToolset()

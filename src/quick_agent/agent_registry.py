@@ -2,38 +2,18 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-import frontmatter
-
-from quick_agent.models.agent_spec import AgentSpec
-from quick_agent.models.loaded_agent_file import LoadedAgentFile
+from quick_agent.models.loaded_agent_file import LoadedAgentFile, parse_agent_sections
 
 
 def split_step_sections(markdown_body: str) -> dict[str, str]:
     """
-    Extracts blocks that begin with headings "## step:<id>".
+    Extracts blocks that begin with headings like "# step:<id>".
     Returns mapping: "step:<id>" -> content for that step (excluding heading line).
     """
-    pattern = re.compile(r"^##\s+(step:[A-Za-z0-9_\-]+)\s*$", re.MULTILINE)
-    matches = list(pattern.finditer(markdown_body))
-    out: dict[str, str] = {}
-
-    for i, m in enumerate(matches):
-        section_name = m.group(1)
-        start = m.end()
-        end = matches[i + 1].start() if (i + 1) < len(matches) else len(markdown_body)
-        out[section_name] = markdown_body[start:end].strip()
-
-    return out
-
-
-def load_agent_file(path: Path) -> LoadedAgentFile:
-    post = frontmatter.load(str(path))
-    spec = AgentSpec.model_validate(post.metadata)
-    steps = split_step_sections(post.content)
-    return LoadedAgentFile(spec=spec, body=post.content, step_prompts=steps)
+    sections = parse_agent_sections(markdown_body)
+    return sections.step_prompts
 
 
 class AgentRegistry:
@@ -70,6 +50,6 @@ class AgentRegistry:
         path = index.get(agent_id)
         if path is None:
             raise FileNotFoundError(f"Agent not found: {agent_id} (searched: {self.agent_roots})")
-        loaded = load_agent_file(path)
+        loaded = LoadedAgentFile(path)
         self._cache[agent_id] = loaded
         return loaded

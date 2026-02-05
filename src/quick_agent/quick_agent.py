@@ -66,22 +66,23 @@ class QuickAgent:
             input_adaptor = FileInput(self._input_data, self.permissions)
         self.run_input: RunInput = input_adaptor.load()
 
-        self.tool_ids: list[str] = list(
-            dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or []))
-        )
-        self.toolset: FunctionToolset[Any] = self._tools.build_toolset(self.tool_ids, self.permissions)
+        self.tool_ids: list[str] = self._build_tool_ids()
+        self.toolset: FunctionToolset[Any] | None = self._build_toolset()
 
         self.model: OpenAIChatModel = build_model(self.loaded.spec.model)
         self.model_settings_json: ModelSettings | None = self._build_model_settings(self.loaded.spec.model)
         self.state: ChainState = self._init_state()
 
     async def run(self) -> BaseModel | str:
-        self._tools.maybe_inject_agent_call(
-            self.tool_ids,
-            self.toolset,
-            self.run_input.source_path,
-            self._run_nested_agent,
-        )
+        if self.has_tools():
+            if self.toolset is None:
+                raise ValueError("Toolset is missing while tools are enabled.")
+            self._tools.maybe_inject_agent_call(
+                self.tool_ids,
+                self.toolset,
+                self.run_input.source_path,
+                self._run_nested_agent,
+            )
 
         final_output = await self._run_chain()
 
@@ -168,7 +169,7 @@ class QuickAgent:
         step: ChainStepSpec,
     ) -> str:
         if step.prompt_section not in self.loaded.step_prompts:
-            raise KeyError(f"Missing step section {step.prompt_section!r} in agent.md body.")
+            raise KeyError(f"Missing step section {step.prompt_section!r} in agent.md instructions.")
 
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         return make_user_prompt(step_prompt, self.run_input, self.state)
@@ -181,10 +182,12 @@ class QuickAgent:
         user_prompt = self._build_user_prompt(
             step=step,
         )
+        toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,
-            instructions=self.loaded.body,
-            toolsets=[self.toolset],
+            instructions=self.loaded.instructions,
+            system_prompt=self.loaded.system_prompt,
+            toolsets=toolsets,
             output_type=str,
         )
         result = await agent.run(user_prompt)
@@ -204,10 +207,12 @@ class QuickAgent:
         user_prompt = self._build_user_prompt(
             step=step,
         )
+        toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,
-            instructions=self.loaded.body,
-            toolsets=[self.toolset],
+            instructions=self.loaded.instructions,
+            system_prompt=self.loaded.system_prompt,
+            toolsets=toolsets,
             output_type=schema_cls,
             model_settings=model_settings,
         )
@@ -237,6 +242,29 @@ class QuickAgent:
             self.state["final_output"] = step_out
             final_output = step_final
         return final_output
+
+    def has_tools(self) -> bool:
+        if not self.tool_ids:
+            return False
+        return True
+
+    def _build_tool_ids(self) -> list[str]:
+        if not self.loaded.spec.tools:
+            return []
+        return list(dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or [])))
+
+    def _build_toolset(self) -> FunctionToolset[Any] | None:
+        if not self.has_tools():
+            return None
+        return self._tools.build_toolset(self.tool_ids, self.permissions)
+
+    def _toolsets_for_run(self) -> list[FunctionToolset[Any]]:
+        if not self.has_tools():
+            return []
+        toolset = self.toolset
+        if toolset is None:
+            return []
+        return [toolset]
 
     def _write_final_output(self, final_output: BaseModel | str) -> Path:
         output_file = self.loaded.spec.output.file

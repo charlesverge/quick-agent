@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 import types
 from pathlib import Path
@@ -110,7 +111,7 @@ def test_resolve_schema_valid_missing_and_invalid() -> None:
         chain=[ChainStepSpec(id="s1", kind="text", prompt_section="step:one")],
         schemas={"Good": "schemas.tmp:GoodSchema", "Bad": "schemas.tmp:NotSchema"},
     )
-    loaded = LoadedAgentFile(spec=spec, body="", step_prompts={})
+    loaded = LoadedAgentFile.from_parts(spec=spec, instructions="", system_prompt="", step_prompts={})
 
     try:
         assert resolve_schema(loaded, "Good") is GoodSchema
@@ -137,6 +138,10 @@ chain:
     prompt_section: step:one
 ---
 
+## Instructions
+
+system.
+
 ## step:one
 
 body.
@@ -144,8 +149,9 @@ body.
     md_path = tmp_path / "agent.md"
     md_path.write_text(md, encoding="utf-8")
 
-    loaded = agent_registry.load_agent_file(md_path)
+    loaded = LoadedAgentFile(md_path)
     assert loaded.spec.name == "Test"
+    assert loaded.instructions == "system."
     assert loaded.step_prompts["step:one"] == "body."
 
 
@@ -166,7 +172,7 @@ body.
     md_path = tmp_path / "agent.md"
     md_path.write_text(md, encoding="utf-8")
 
-    loaded = agent_registry.load_agent_file(md_path)
+    loaded = LoadedAgentFile(md_path)
     assert loaded.spec.model.base_url == "https://api.openai.com/v1"
     assert loaded.spec.model.api_key_env == "OPENAI_API_KEY"
     assert loaded.spec.model.model_name == "gpt-5.2"
@@ -189,8 +195,258 @@ body.
     md_path = tmp_path / "agent.md"
     md_path.write_text(md, encoding="utf-8")
 
-    loaded = agent_registry.load_agent_file(md_path)
+    loaded = LoadedAgentFile(md_path)
     assert loaded.spec.model.base_url == "https://api.openai.com/v1"
     assert loaded.spec.model.api_key_env == "OPENAI_API_KEY"
     assert loaded.spec.model.model_name == "gpt-5.2"
     assert loaded.spec.model.provider == "openai-compatible"
+
+
+def test_load_agent_file_parses_instructions_and_system_prompt(tmp_path: Path) -> None:
+    md = """---
+name: Sections
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+## instructions
+
+Use the tool.
+
+## Notes
+
+ignored.
+
+## System prompt
+
+You are concise.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert "Use the tool." in loaded.instructions
+    assert "## Notes" in loaded.instructions
+    assert "ignored." in loaded.instructions
+    assert loaded.system_prompt == "You are concise."
+    assert loaded.step_prompts == {}
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("## Instructions", "Do it."),
+        ("## instructions", "Do it."),
+        ("## INSTRUCTIONS", "Do it."),
+    ],
+)
+def test_load_agent_file_accepts_instruction_header_case(
+    tmp_path: Path, header: str, expected: str
+) -> None:
+    md = f"""---
+name: Case Instructions
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+{header}
+
+{expected}
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert loaded.instructions == expected
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("# System prompt", "Be brief."),
+        ("## System prompt", "Be brief."),
+        ("### System prompt", "Be brief."),
+        ("## system prompt", "Be brief."),
+        ("## SYSTEM PROMPT", "Be brief."),
+        ("## system_prompt", "Be brief."),
+    ],
+)
+def test_load_agent_file_accepts_system_prompt_header_case(
+    tmp_path: Path, header: str, expected: str
+) -> None:
+    md = f"""---
+name: Case System
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+{header}
+
+{expected}
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert loaded.system_prompt == expected
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "## step:one",
+        "## STEP:one",
+        "## Step:one",
+    ],
+)
+def test_load_agent_file_accepts_step_header_case(tmp_path: Path, header: str) -> None:
+    md = f"""---
+name: Case Step
+model:
+  base_url: http://localhost
+  model_name: test
+chain:
+  - id: one
+    kind: text
+    prompt_section: step:one
+---
+
+{header}
+
+Say hi.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert loaded.step_prompts["step:one"] == "Say hi."
+
+
+def test_load_agent_file_allows_instructions_only_no_steps(tmp_path: Path) -> None:
+    md = """---
+name: No Steps
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+## Instructions
+
+Just answer.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert loaded.instructions == "Just answer."
+    assert loaded.step_prompts == {}
+
+
+def test_load_agent_file_raises_without_sections(tmp_path: Path) -> None:
+    md = """---
+name: Empty
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+just text.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="instructions, system prompt, or step sections"):
+        LoadedAgentFile(md_path)
+
+
+def test_load_agent_file_warns_on_preamble_before_instructions(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    md = """---
+name: Preamble
+model:
+  base_url: http://localhost
+  model_name: test
+chain: []
+---
+
+Preamble text.
+
+## Instructions
+
+Do the thing.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        LoadedAgentFile(md_path)
+
+    assert "Ignored text before instructions or system prompt" in caplog.text
+
+
+def test_load_agent_file_preserves_subsections_in_all_sections(tmp_path: Path) -> None:
+    md = """---
+name: Subsections
+model:
+  base_url: http://localhost
+  model_name: test
+chain:
+  - id: one
+    kind: text
+    prompt_section: step:one
+---
+
+## Instructions
+
+Intro line.
+
+## Constraints
+
+- Be concise.
+- Keep scope tight.
+
+## System prompt
+
+System intro.
+
+## Rules
+
+Always follow the rules.
+
+## step:one
+
+Step intro.
+
+## Details
+
+Explain details here.
+
+## step:two
+
+Step intro two.
+
+## Details
+
+Explain details here.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert "Intro line." in loaded.instructions
+    assert "## Constraints" in loaded.instructions
+    assert "Be concise." in loaded.instructions
+    assert "System intro." in loaded.system_prompt
+    assert "## Rules" in loaded.system_prompt
+    assert "Always follow the rules." in loaded.system_prompt
+    assert "Step intro." in loaded.step_prompts["step:one"]
+    assert "## Details" in loaded.step_prompts["step:one"]
+    assert "Explain details here." in loaded.step_prompts["step:one"]
+    assert "## Details" in loaded.step_prompts["step:two"]

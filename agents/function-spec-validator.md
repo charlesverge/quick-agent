@@ -43,7 +43,7 @@ handoff:
   input_mode: "final_output_json"
 ---
 
-# function_spec_validator
+## Instructions
 
 You are a validation agent that checks a provided function specification.
 Return a JSON valid result that includes a boolean `valid` field.

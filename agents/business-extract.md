@@ -21,7 +21,7 @@ output:
   file: "out/business_extract.md"
 ---
 
-# Business Extract
+## Instructions
 
 Extract structured details from the input description.
 

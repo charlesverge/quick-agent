@@ -38,6 +38,10 @@ handoff:
 nested_output: inline
 ---
 
+## Instructions
+
+Describe the agent's global instructions here.
+
 ## step:draft
 
 Write a first draft.
@@ -107,3 +111,13 @@ write their output file.
 
 - `inline` (default): nested agents return output only; no file is written.
 - `file`: nested agents write their configured `output.file`.
+
+## Instructions Section
+
+If present, `## Instructions` provides the global prompt instructions. Only `## Instructions`,
+`## System prompt`, and `## step:<id>` headers delimit sections. Other headers are treated as
+part of the current section's content.
+
+## System Prompt
+
+If present, `## System prompt` sets a separate system prompt that is passed to the model.

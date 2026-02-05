@@ -24,7 +24,7 @@ output:
   file: "out/business_extract_structured.json"
 ---
 
-# Business Extract Structured
+## Instructions
 
 Extract structured details from the input description.
 
