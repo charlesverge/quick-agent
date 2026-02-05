@@ -232,7 +232,9 @@ async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
     assert messages[0]["role"] == "system"
     assert messages[0]["content"] == "You are concise."
     assert messages[-1]["role"] == "user"
-    assert "# Task Input" in messages[-1]["content"]
+    assert "# Task Input" not in messages[-1]["content"]
+    assert "## Input Content" not in messages[-1]["content"]
+    assert "## Chain State (YAML)" not in messages[-1]["content"]
     assert "## Step Instructions" not in messages[-1]["content"]
 
 
@@ -287,5 +289,7 @@ async def test_single_shot_no_steps_instructions_only_includes_instructions(
     system_contents = [message.get("content") for message in system_messages]
     assert "Use the tool." in system_contents
     assert messages[-1]["role"] == "user"
-    assert "# Task Input" in messages[-1]["content"]
+    assert "# Task Input" not in messages[-1]["content"]
+    assert "## Input Content" not in messages[-1]["content"]
+    assert "## Chain State (YAML)" not in messages[-1]["content"]
     assert "## Step Instructions" not in messages[-1]["content"]

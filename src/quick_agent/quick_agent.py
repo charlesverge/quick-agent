@@ -174,6 +174,16 @@ class QuickAgent:
     def _build_single_shot_prompt(self) -> str:
         return make_user_prompt(self.run_input, self.state)
 
+    def _normalize_agent_text(self, text: str) -> str | None:
+        if text:
+            return text
+        return None
+
+    def _normalize_system_prompt(self, text: str) -> str | list[str]:
+        if text:
+            return text
+        return []
+
     async def _run_text_step(
         self,
         *,
@@ -186,7 +196,7 @@ class QuickAgent:
         agent = Agent(
             self.model,
             instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
+            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
             toolsets=toolsets,
             output_type=str,
         )
@@ -198,8 +208,8 @@ class QuickAgent:
         toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,
-            instructions=self.loaded.instructions,
-            system_prompt=self.loaded.system_prompt,
+            instructions=self._normalize_agent_text(self.loaded.instructions),
+            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
             toolsets=toolsets,
             output_type=str,
         )
@@ -224,7 +234,7 @@ class QuickAgent:
         agent = Agent(
             self.model,
             instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
+            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
             toolsets=toolsets,
             output_type=schema_cls,
             model_settings=model_settings,

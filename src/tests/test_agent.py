@@ -80,14 +80,24 @@ def test_write_output_creates_parent(tmp_path: Path) -> None:
 
 def test_make_user_prompt_contains_sections() -> None:
     run_input = RunInput(source_path="file.txt", kind="text", text="hi", data=None)
-    prompt = prompting.make_user_prompt(run_input, {"x": 1})
+    prompt = prompting.make_user_prompt(run_input, {"steps": {"x": 1}})
 
     assert "# Task Input" in prompt
     assert "source_path: file.txt" in prompt
     assert "## Input Content" in prompt
     assert "hi" in prompt
-    assert "## Chain State (JSON)" in prompt
-    assert '"x": 1' in prompt
+    assert "## Chain State (YAML)" in prompt
+    assert "x: 1" in prompt
+
+
+def test_make_user_prompt_inline_without_state_hides_headers() -> None:
+    run_input = RunInput(source_path="inline_input.txt", kind="text", text="hello", data=None)
+    prompt = prompting.make_user_prompt(run_input, {})
+
+    assert "# Task Input" not in prompt
+    assert "## Input Content" not in prompt
+    assert "## Chain State" not in prompt
+    assert prompt.strip() == "hello"
 
 
 def test_resolve_schema_valid_missing_and_invalid() -> None:

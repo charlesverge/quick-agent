@@ -78,8 +78,8 @@ class FakeAgent:
     def __init__(
         self,
         model: Any,
-        instructions: str,
-        system_prompt: str,
+        instructions: str | None,
+        system_prompt: str | list[str],
         toolsets: list[Any],
         output_type: Any,
         model_settings: Any | None = None,
@@ -486,7 +486,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     assert final == "hello"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "system\n\n## Step Instructions\ndo thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_init["output_type"] is str
 
 
@@ -644,7 +644,7 @@ async def test_run_text_step_no_instructions_or_system_prompt(monkeypatch: pytes
     assert final == "ok"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "## Step Instructions\ndo thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
@@ -726,7 +726,7 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
     assert final == "ok"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "Use the tool.\n\n## Step Instructions\ndo thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
@@ -893,7 +893,7 @@ async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.Monk
 
     assert output == "hello"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == ""
+    assert FakeAgent.last_init["instructions"] is None
     assert FakeAgent.last_init["system_prompt"] == "You are concise."
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
@@ -931,7 +931,7 @@ async def test_run_chain_single_shot_instructions_only(monkeypatch: pytest.Monke
     assert output == "hello"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "Use the tool."
-    assert FakeAgent.last_init["system_prompt"] == ""
+    assert FakeAgent.last_init["system_prompt"] == []
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 

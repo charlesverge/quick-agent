@@ -13,6 +13,8 @@ dependencies = [
   "pydantic",
   "pydantic-ai",
   "python-frontmatter",
+  "types-PyYAML",
+  "PyYAML",
 ]
 keywords = ["agents", "llm", "automation", "pydantic", "markdown", "orchestrator"]
 classifiers = [
