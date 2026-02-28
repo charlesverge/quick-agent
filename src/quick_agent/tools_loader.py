@@ -65,6 +65,14 @@ def load_tools(
             func = fs_adapter.read_text
         elif tool_id == "filesystem.write_text":
             func = fs_adapter.write_text
+        elif tool_id == "filesystem.append_text":
+            func = fs_adapter.append_text
+        elif tool_id == "filesystem.list_files":
+            func = fs_adapter.list_files
+        elif tool_id == "filesystem.delete_file":
+            func = fs_adapter.delete_file
+        elif tool_id == "filesystem.find_closest_file":
+            func = fs_adapter.find_closest_file
         else:
             func = import_symbol(f"{tool_obj.impl.module}:{tool_obj.impl.function}")
 

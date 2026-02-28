@@ -1,0 +1,10 @@
+{
+  "id": "filesystem.delete_file",
+  "name": "filesystem.delete_file",
+  "description": "Delete a file within the permitted directory. Returns a confirmation message.",
+  "impl": {
+    "kind": "python",
+    "module": "quick_agent.tools.filesystem.delete_file",
+    "function": "delete_file"
+  }
+}

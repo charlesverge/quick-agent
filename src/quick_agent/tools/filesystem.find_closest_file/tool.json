@@ -1,0 +1,10 @@
+{
+  "id": "filesystem.find_closest_file",
+  "name": "filesystem.find_closest_file",
+  "description": "Find the file whose name is the closest match to a given name in a directory. Returns the full path of the best match, or an empty string if no files exist.",
+  "impl": {
+    "kind": "python",
+    "module": "quick_agent.tools.filesystem.find_closest_file",
+    "function": "find_closest_file"
+  }
+}

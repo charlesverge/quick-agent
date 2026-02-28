@@ -352,3 +352,81 @@ Then respond with only the returned text value.
     output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
     assert output == "pong"
     assert child_output.exists()
+
+
+def test_file_manager_agent_list_find_read_append(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    # Seed test files
+    notes_file = safe_root / "meeting_notes.txt"
+    notes_file.write_text("Original meeting notes.\n", encoding="utf-8")
+    (safe_root / "report_q4.txt").write_text("Q4 report data.\n", encoding="utf-8")
+    (safe_root / "readme.md").write_text("# README\n", encoding="utf-8")
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4o"
+
+    agent_md = f"""---
+name: File Manager Agent
+model:
+  provider: openai-compatible
+  base_url: {base_url}
+  api_key_env: OPENAI_API_KEY
+  model_name: {model_name}
+  temperature: 0.1
+  max_tokens: 2048
+tools:
+  - "filesystem.list_files"
+  - "filesystem.find_closest_file"
+  - "filesystem.read_text"
+  - "filesystem.append_text"
+chain:
+  - id: execute
+    kind: text
+    prompt_section: step:execute
+output:
+  format: json
+  file: out/result.json
+---
+
+## step:execute
+
+You are given a JSON input with keys: directory, search_name, append_text.
+
+Follow these steps in order:
+1. Call filesystem.list_files with the given directory to see available files.
+2. Call filesystem.find_closest_file with the directory and search_name to get the full path of the closest matching file.
+3. Call filesystem.read_text with the full path returned in step 2.
+4. Call filesystem.append_text with the same path and the append_text value.
+5. Return a plain-text summary including the file found and what was appended.
+"""
+    (agents_dir / "file-manager.md").write_text(agent_md, encoding="utf-8")
+
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+
+    input_path = safe_root / "input.json"
+    input_path.write_text(
+        f'{{"directory": "{safe_root}", "search_name": "meeting", "append_text": "\\nAppended line."}}',
+        encoding="utf-8",
+    )
+
+    orchestrator = Orchestrator(
+        [agents_dir],
+        [system_tools_dir],
+        safe_dir=safe_root,
+    )
+
+    import anyio
+
+    anyio.run(_run_agent, orchestrator, "file-manager", input_path)
+
+    updated = notes_file.read_text(encoding="utf-8")
+    assert "Original meeting notes." in updated
+    assert "Appended line." in updated
