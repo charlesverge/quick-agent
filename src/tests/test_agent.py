@@ -490,7 +490,7 @@ Explain details here.
 
 def test_load_agent_file_ignores_headers_inside_fenced_template() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    loaded = LoadedAgentFile(repo_root / "examples" / "rule_checker" / "rules_to_rule_agent.md")
+    loaded = LoadedAgentFile(repo_root / "src" / "tests" / "fixtures" / "rules_to_rule_agent.md")
 
     assert "### Agent file template" in loaded.instructions
     assert "````markdown" in loaded.instructions
