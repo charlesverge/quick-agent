@@ -6,6 +6,10 @@ import os
 from typing import TYPE_CHECKING, Type
 
 import openai
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import ChatCompletionSystemMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat.completion_create_params import ResponseFormatJSONSchema
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
@@ -25,8 +29,8 @@ def _single_shot_messages(
     instructions: str | None,
     system_prompt: str | list[str],
     user_prompt: str,
-) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
+) -> list[ChatCompletionMessageParam]:
+    messages: list[ChatCompletionMessageParam] = []
     system_parts: list[str] = []
     if isinstance(system_prompt, str) and system_prompt:
         system_parts.append(system_prompt)
@@ -37,8 +41,10 @@ def _single_shot_messages(
     if isinstance(instructions, str) and instructions:
         system_parts.append(instructions)
     if system_parts:
-        messages.append({"role": "system", "content": "\n".join(system_parts)})
-    messages.append({"role": "user", "content": user_prompt})
+        system_message: ChatCompletionSystemMessageParam = {"role": "system", "content": "\n".join(system_parts)}
+        messages.append(system_message)
+    user_message: ChatCompletionUserMessageParam = {"role": "user", "content": user_prompt}
+    messages.append(user_message)
     return messages
 
 
@@ -165,19 +171,20 @@ async def _run_single_shot_structured_via_openai_sdk(
     # Track upstream status: https://github.com/pydantic/pydantic-ai/pull/4160
     response = None
     try:
+        response_format: ResponseFormatJSONSchema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_cls.__name__,
+                "schema": schema_cls.model_json_schema(),
+                "strict": True,
+            },
+        }
         response = await client.chat.completions.create(
             model=agent.model_spec.model_name,
             messages=messages,
             temperature=agent.model_spec.temperature,
             max_tokens=agent.model_spec.max_tokens,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_cls.__name__,
-                    "schema": schema_cls.model_json_schema(),
-                    "strict": True,
-                },
-            },
+            response_format=response_format,
         )
     except openai.APIStatusError as error:
         message = _extract_openai_error_message(error)
