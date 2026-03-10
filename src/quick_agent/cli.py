@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -30,7 +31,13 @@ def main() -> None:
     input_group.add_argument("--input", type=str, help="Path to an input file")
     input_group.add_argument("--input-text", type=str, help="Raw input text")
     parser.add_argument("--tool", action="append", default=[], help="Extra tool IDs to add at runtime")
+    parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     package_root = Path(__file__).resolve().parent
     system_agents_dir = package_root / "agents"

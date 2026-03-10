@@ -22,7 +22,7 @@ python -m quick_agent.cli --agent example --input path/to/input.txt
 - `--agents-dir`: Directory to search for user agents. Default: `agents`.
 - `--tools-dir`: Directory to search for user tools. Default: `tools`.
 - `--safe-dir`: Root directory for file access. Default: `safe`.
-- `--tool`: Extra tool ids to add at runtime. Can be repeated.
+- `--tool`: Extra tool names to add at runtime. Can be repeated.
 
 ## Safe Directory
 
@@ -50,4 +50,4 @@ The CLI merges user and system tools:
 - User tools: `--tools-dir` (recursive).
 - System tools: packaged in `quick_agent/tools` (recursive).
 
-If tool ids collide, user tools win.
+If tool names collide, user tools win.

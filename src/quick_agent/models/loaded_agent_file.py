@@ -14,7 +14,7 @@ from quick_agent.models.agent_spec import AgentSpec
 
 logger = logging.getLogger(__name__)
 
-SECTION_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+SECTION_HEADER_LINE_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 STEP_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -102,23 +102,67 @@ def classify_section_header(header_text: str) -> tuple[str, str] | None:
     return None
 
 
+def parse_fence_marker(line: str) -> tuple[str, int] | None:
+    stripped = line.lstrip()
+    if not stripped:
+        return None
+    marker_char = stripped[0]
+    if marker_char not in ("`", "~"):
+        return None
+    marker_len = 0
+    for char in stripped:
+        if char == marker_char:
+            marker_len += 1
+        else:
+            break
+    if marker_len < 3:
+        return None
+    return (marker_char, marker_len)
+
+
 def parse_agent_sections(markdown_body: str) -> ParsedAgentSections:
-    matches = list(SECTION_HEADER_RE.finditer(markdown_body))
     recognized: list[tuple[str, str, int, int]] = []
     instructions_start: int | None = None
     system_prompt_start: int | None = None
+    in_fence = False
+    active_fence_char = ""
+    active_fence_len = 0
+    offset = 0
 
-    for match in matches:
-        header_text = match.group(2).strip()
-        classified = classify_section_header(header_text)
-        if classified is None:
+    for line in markdown_body.splitlines(keepends=True):
+        fence_marker = parse_fence_marker(line)
+        if in_fence:
+            if fence_marker is not None:
+                marker_char, marker_len = fence_marker
+                if marker_char == active_fence_char and marker_len >= active_fence_len:
+                    in_fence = False
+                    active_fence_char = ""
+                    active_fence_len = 0
+            offset += len(line)
             continue
-        kind, key = classified
-        recognized.append((kind, key, match.start(), match.end()))
-        if kind == "instructions" and instructions_start is None:
-            instructions_start = match.start()
-        if kind == "system_prompt" and system_prompt_start is None:
-            system_prompt_start = match.start()
+        if fence_marker is not None:
+            marker_char, marker_len = fence_marker
+            in_fence = True
+            active_fence_char = marker_char
+            active_fence_len = marker_len
+            offset += len(line)
+            continue
+
+        line_text = line.rstrip("\r\n")
+        match = SECTION_HEADER_LINE_RE.match(line_text)
+        if match is not None:
+            header_text = match.group(2).strip()
+            classified = classify_section_header(header_text)
+            if classified is not None:
+                kind, key = classified
+                line_start = offset
+                line_end = offset + len(line_text)
+                recognized.append((kind, key, line_start, line_end))
+                if kind == "instructions" and instructions_start is None:
+                    instructions_start = line_start
+                if kind == "system_prompt" and system_prompt_start is None:
+                    system_prompt_start = line_start
+        offset += len(line)
 
     instructions = ""
     system_prompt = ""

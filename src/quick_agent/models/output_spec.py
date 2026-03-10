@@ -8,3 +8,4 @@ from pydantic import BaseModel
 class OutputSpec(BaseModel):
     format: str = "json"  # "json" or "markdown"
     file: str | None = None
+    output_schema: str | None = None

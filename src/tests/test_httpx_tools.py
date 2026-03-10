@@ -50,7 +50,7 @@ class BuildModelStub:
     def __init__(self, model: OpenAIChatModel) -> None:
         self.model = model
 
-    def __call__(self, _: ModelSpec) -> OpenAIChatModel:
+    def __call__(self, _: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
         return self.model
 
 

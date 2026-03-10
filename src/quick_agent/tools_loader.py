@@ -12,6 +12,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.models.tool_json import ToolJson
 from quick_agent.tools.filesystem.adapter import FilesystemToolAdapter
+from quick_agent.tools.shell.adapter import ShellToolAdapter
 
 
 def import_symbol(path: str) -> Any:
@@ -32,15 +33,17 @@ def _discover_tool_index(tool_roots: list[Path]) -> dict[str, Path]:
             continue
         for tool_json_path in root.rglob("tool.json"):
             tool_obj = ToolJson.model_validate_json(tool_json_path.read_text(encoding="utf-8"))
-            if tool_obj.id in index:
+            if "." in tool_obj.name:
+                raise ValueError(f"Tool name {tool_obj.name!r} must not contain '.'.")
+            if tool_obj.name in index:
                 continue
-            index[tool_obj.id] = tool_json_path
+            index[tool_obj.name] = tool_json_path
     return index
 
 
 def load_tools(
     tool_roots: list[Path],
-    tool_ids: list[str],
+    tool_names: list[str],
     permissions: DirectoryPermissions,
 ) -> FunctionToolset[Any]:
     """
@@ -50,35 +53,35 @@ def load_tools(
 
     tool_index = _discover_tool_index(tool_roots)
     fs_adapter = FilesystemToolAdapter(permissions)
+    shell_adapter = ShellToolAdapter(permissions)
 
-    for tool_id in tool_ids:
-        tool_json_path = tool_index.get(tool_id)
+    for tool_name in tool_names:
+        tool_json_path = tool_index.get(tool_name)
         if tool_json_path is None:
-            raise FileNotFoundError(f"Missing tool.json for tool {tool_id} in roots: {tool_roots}")
+            raise FileNotFoundError(f"Missing tool.json for tool {tool_name} in roots: {tool_roots}")
 
         tool_obj = ToolJson.model_validate_json(tool_json_path.read_text(encoding="utf-8"))
         if tool_obj.impl.kind != "python":
             raise NotImplementedError("Skeleton supports python tools only. Add MCP support next.")
 
         func: Callable[..., Any]
-        if tool_id == "filesystem.read_text":
+        if tool_name == "filesystem_read_text":
             func = fs_adapter.read_text
-        elif tool_id == "filesystem.write_text":
+        elif tool_name == "filesystem_write_text":
             func = fs_adapter.write_text
-        elif tool_id == "filesystem.append_text":
+        elif tool_name == "filesystem_append_text":
             func = fs_adapter.append_text
-        elif tool_id == "filesystem.list_files":
+        elif tool_name == "filesystem_list_files":
             func = fs_adapter.list_files
-        elif tool_id == "filesystem.delete_file":
+        elif tool_name == "filesystem_delete_file":
             func = fs_adapter.delete_file
-        elif tool_id == "filesystem.find_closest_file":
+        elif tool_name == "filesystem_find_closest_file":
             func = fs_adapter.find_closest_file
+        elif tool_name == "shell_run":
+            func = shell_adapter.run
         else:
             func = import_symbol(f"{tool_obj.impl.module}:{tool_obj.impl.function}")
 
-        # Register function as a tool.
-        # The FunctionToolset will derive schema from type hints / docstring.
-        # You can enforce consistency with tool.json by adding checks here.
         toolset.add_function(func=func, name=tool_obj.name, description=tool_obj.description)
 
     return toolset

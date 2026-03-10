@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Type, TypeAlias, TypedDict
 
+logger = logging.getLogger(__name__)
+
+import httpx
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -16,6 +24,10 @@ from pydantic_ai.toolsets import FunctionToolset
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.exceptions import QuickAgentChatNotSupportedException
+from quick_agent.exceptions import QuickAgentException
+from quick_agent.exceptions import QuickAgentToolsNotSupportedException
+from quick_agent.exceptions import QuickAgentUnexpectedModelBehaviorException
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
 from quick_agent.json_utils import extract_first_json_object
@@ -24,6 +36,7 @@ from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
+from quick_agent.single_shot import run_single_shot
 from quick_agent.tools_loader import import_symbol
 
 StepOutput: TypeAlias = str | dict[str, Any]
@@ -45,7 +58,11 @@ class QuickAgent:
         agent_id: str,
         input_data: InputAdaptor | Path,
         extra_tools: list[str] | None,
+        model: ModelSpec | None = None,
         write_output: bool = True,
+        record_http_traffic: bool = False,
+        enable_llm_request_logging: bool = False,
+        llm_log_path: Path | str | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
@@ -68,10 +85,29 @@ class QuickAgent:
 
         self.tool_ids: list[str] = self._build_tool_ids()
         self.toolset: FunctionToolset[Any] | None = self._build_toolset()
-
-        self.model: OpenAIChatModel = build_model(self.loaded.spec.model)
-        self.model_settings_json: ModelSettings | None = self._build_model_settings(self.loaded.spec.model)
+        self.model_spec: ModelSpec = model or self.loaded.spec.model
+        self._record_http_traffic: bool = record_http_traffic
+        self._http_traffic_entries: list[dict[str, object]] = []
+        self.http_request_log: list[dict[str, object]] = []
+        self.http_response_log: list[dict[str, object]] = []
+        self._http_log_max_entries: int = 200
+        self._http_client: httpx.AsyncClient | None
+        if self._record_http_traffic:
+            self._http_client = httpx.AsyncClient(
+                event_hooks={
+                    "request": [self._record_http_request],
+                    "response": [self._record_http_response],
+                }
+            )
+        else:
+            self._http_client = None
+        self.model: OpenAIChatModel = build_model(self.model_spec, http_client=self._http_client)
+        self.model_settings_json: ModelSettings | None = self._build_model_settings(self.model_spec)
         self.state: ChainState = self._init_state()
+        self._enable_llm_request_logging: bool = enable_llm_request_logging
+        if llm_log_path is None:
+            llm_log_path = Path("log/results.log")
+        self._llm_log_path: Path = Path(llm_log_path)
 
     async def run(self) -> BaseModel | str:
         if self.has_tools():
@@ -84,14 +120,17 @@ class QuickAgent:
                 self._run_nested_agent,
             )
 
-        final_output = await self._run_chain()
+        try:
+            final_output = await self._run_chain()
 
-        if self._write_output_file:
-            self._write_final_output(final_output)
+            if self._write_output_file:
+                self._write_final_output(final_output)
 
-        await self._handle_handoff(final_output)
+            await self._handle_handoff(final_output)
 
-        return final_output
+            return final_output
+        finally:
+            self._write_llm_request_log(None)
 
     async def _run_nested_agent(self, agent_id: str, input_data: InputAdaptor | Path) -> BaseModel | str:
         nested_write_output = self.loaded.spec.nested_output == "file"
@@ -102,7 +141,11 @@ class QuickAgent:
             agent_id=agent_id,
             input_data=input_data,
             extra_tools=None,
+            model=self.model_spec,
             write_output=nested_write_output,
+            record_http_traffic=self._record_http_traffic,
+            enable_llm_request_logging=self._enable_llm_request_logging,
+            llm_log_path=self._llm_log_path,
         )
         return await agent.run()
 
@@ -174,21 +217,215 @@ class QuickAgent:
     def _build_single_shot_prompt(self) -> str:
         return make_user_prompt(self.run_input, self.state)
 
+    def _json_compatible_value(self, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            converted: dict[str, object] = {}
+            for key, item in value.items():
+                converted[str(key)] = self._json_compatible_value(item)
+            return converted
+        if isinstance(value, list):
+            return [self._json_compatible_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._json_compatible_value(item) for item in value]
+        return str(value)
+
+    def _record_llm_request(
+        self,
+        *,
+        step_id: str | None,
+        step_kind: str,
+        output_schema: str | None,
+        instructions: str | None,
+        system_prompt: str | list[str],
+        user_prompt: str,
+        model_settings: ModelSettings | None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "request_state": "before_request_start",
+            "agent_id": self._agent_id,
+            "model": {
+                "provider": self.model_spec.provider,
+                "base_url": self.model_spec.base_url,
+                "model_name": self.model_spec.model_name,
+            },
+            "step": {
+                "id": step_id,
+                "kind": step_kind,
+                "output_schema": output_schema,
+            },
+            "system_prompt": system_prompt,
+            "instructions": instructions,
+            "user_prompt": user_prompt,
+            "model_settings": self._json_compatible_value(model_settings),
+            "tool_ids": self.tool_ids,
+        }
+        self._write_llm_request_log(payload)
+
+    def _write_llm_request_log(self, payload: dict[str, object] | None) -> None:
+        prefix = "QuickAgent._write_llm_request_log"
+        if not self._enable_llm_request_logging or payload is None:
+            return
+        try:
+            self._llm_log_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = json.dumps(payload, indent=2)
+            with self._llm_log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write("[LLM_REQUEST]\n")
+                log_file.write(entry)
+                log_file.write("\n\n")
+        except OSError:
+            logger.exception("%s: file=%s > Failed to write LLM request log", prefix, self._llm_log_path)
+
     def _normalize_agent_text(self, text: str) -> str | None:
         if text:
             return text
         return None
+
+    def _current_model_settings(self) -> ModelSettings | None:
+        return self.model_settings_json
 
     def _normalize_system_prompt(self, text: str) -> str | list[str]:
         if text:
             return text
         return []
 
+    def _map_model_http_error(self, error: ModelHTTPError) -> QuickAgentException | None:
+        body = error.body
+        message = ""
+        if isinstance(body, dict):
+            body_message = body.get("message")
+            if isinstance(body_message, str):
+                message = body_message
+        elif isinstance(body, str):
+            message = body
+        if "does not support tools" in message:
+            return QuickAgentToolsNotSupportedException(model_name=error.model_name, message=message)
+        if "does not support chat" in message:
+            return QuickAgentChatNotSupportedException(model_name=error.model_name, message=message)
+        return None
+
+    def _decode_http_bytes(self, value: bytes) -> str:
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.decode("utf-8", errors="replace")
+
+    def _record_http_traffic_entry(self, entry: dict[str, object]) -> None:
+        self._http_traffic_entries.append(entry)
+        if len(self._http_traffic_entries) > self._http_log_max_entries:
+            del self._http_traffic_entries[0]
+
+    def _record_http_request_entry(self, request_entry: dict[str, object]) -> None:
+        self.http_request_log.append(request_entry)
+        if len(self.http_request_log) > self._http_log_max_entries:
+            del self.http_request_log[0]
+
+    def _record_http_response_entry(self, response_entry: dict[str, object]) -> None:
+        self.http_response_log.append(response_entry)
+        if len(self.http_response_log) > self._http_log_max_entries:
+            del self.http_response_log[0]
+
+    async def _record_http_request(self, request: httpx.Request) -> None:
+        request_body: str | None = None
+        if request.content:
+            request_body = self._decode_http_bytes(request.content)
+        entry: dict[str, object] = {
+            "event": "request",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "request": {
+                "method": request.method,
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "body": request_body,
+            },
+        }
+        request_obj = entry.get("request")
+        if isinstance(request_obj, dict):
+            self._record_http_request_entry(request_obj)
+        self._record_http_traffic_entry(entry)
+
+    async def _record_http_response(self, response: httpx.Response) -> None:
+        response_body: str | None = None
+        response_content = await response.aread()
+        if response_content:
+            response_body = self._decode_http_bytes(response_content)
+        request_body: str | None = None
+        if response.request.content:
+            request_body = self._decode_http_bytes(response.request.content)
+        entry: dict[str, object] = {
+            "event": "response",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "request": {
+                "method": response.request.method,
+                "url": str(response.request.url),
+                "headers": dict(response.request.headers),
+                "body": request_body,
+            },
+            "response": {
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "body": response_body,
+            },
+        }
+        response_obj = entry.get("response")
+        if isinstance(response_obj, dict):
+            self._record_http_response_entry(response_obj)
+        self._record_http_traffic_entry(entry)
+
+    def _last_http_exchange_context(self) -> dict[str, object]:
+        if self.http_request_log:
+            context: dict[str, object] = {
+                "request": self.http_request_log[-1],
+                "request_source": "quick_agent_http_traffic_log",
+            }
+            if self.http_response_log:
+                context["response"] = self.http_response_log[-1]
+            return context
+        for entry in reversed(self._http_traffic_entries):
+            if entry.get("event") == "response":
+                request_obj = entry.get("request")
+                response_obj = entry.get("response")
+                if isinstance(request_obj, dict):
+                    exchange_context: dict[str, object] = {"request": request_obj, "request_source": "quick_agent_http_traffic_log"}
+                    if isinstance(response_obj, dict):
+                        exchange_context["response"] = response_obj
+                    return exchange_context
+        for entry in reversed(self._http_traffic_entries):
+            if entry.get("event") == "request":
+                request_obj = entry.get("request")
+                if isinstance(request_obj, dict):
+                    return {"request": request_obj, "request_source": "quick_agent_http_traffic_log"}
+        return {}
+
+    def _unexpected_model_behavior_request_context(
+        self,
+        *,
+        instructions: str | None,
+        system_prompt: str | list[str],
+        user_prompt: str,
+        model_settings: ModelSettings | None,
+    ) -> dict[str, object]:
+        context: dict[str, object] = {
+            "base_url": self.model_spec.base_url,
+            "model_name": self.model_spec.model_name,
+            "instructions": instructions,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "model_settings": self._json_compatible_value(model_settings),
+        }
+        context.update(self._last_http_exchange_context())
+        return context
+
     async def _run_text_step(
         self,
         *,
         step: ChainStepSpec,
     ) -> tuple[StepOutput, BaseModel | str]:
+        prefix = "QuickAgent._run_text_step"
         user_prompt = self._build_user_prompt()
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
@@ -200,27 +437,50 @@ class QuickAgent:
             toolsets=toolsets,
             output_type=str,
         )
-        result = await agent.run(user_prompt)
+        self._record_llm_request(
+            step_id=step.id,
+            step_kind=step.kind,
+            output_schema=step.output_schema,
+            instructions=step_instructions,
+            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            user_prompt=user_prompt,
+            model_settings=self._current_model_settings(),
+        )
+        logger.info("%s: model=%s step=%s > Calling model", prefix, self.model_spec.model_name, step.id)
+        try:
+            result = await agent.run(user_prompt)
+        except UnexpectedModelBehavior as error:
+            raise QuickAgentUnexpectedModelBehaviorException(
+                original_exception=error,
+                request_context=self._unexpected_model_behavior_request_context(
+                    instructions=step_instructions,
+                    system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+                    user_prompt=user_prompt,
+                    model_settings=self._current_model_settings(),
+                ),
+            ) from error
+        except ModelHTTPError as error:
+            mapped_error = self._map_model_http_error(error)
+            if mapped_error is not None:
+                raise mapped_error from error
+            raise error
         return result.output, result.output
 
     async def _run_single_shot(self) -> BaseModel | str:
-        user_prompt = self._build_single_shot_prompt()
-        toolsets = self._toolsets_for_run()
-        agent = Agent(
-            self.model,
-            instructions=self._normalize_agent_text(self.loaded.instructions),
-            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
-            toolsets=toolsets,
-            output_type=str,
-        )
-        result = await agent.run(user_prompt)
-        return result.output
+        prefix = "QuickAgent._run_single_shot"
+        schema_name = self.loaded.spec.output.output_schema
+        schema_cls: Type[BaseModel] | None = None
+        if schema_name:
+            schema_cls = resolve_schema(self.loaded, schema_name)
+        logger.info("%s: model=%s > Calling model", prefix, self.model_spec.model_name)
+        return await run_single_shot(self, schema_cls=schema_cls)
 
     async def _run_structured_step(
         self,
         *,
         step: ChainStepSpec,
     ) -> tuple[StepOutput, BaseModel | str]:
+        prefix = "QuickAgent._run_structured_step"
         if not step.output_schema:
             raise ValueError(f"Step {step.id} is structured but missing output_schema.")
         schema_cls = resolve_schema(self.loaded, step.output_schema)
@@ -239,7 +499,33 @@ class QuickAgent:
             output_type=schema_cls,
             model_settings=model_settings,
         )
-        result = await agent.run(user_prompt)
+        self._record_llm_request(
+            step_id=step.id,
+            step_kind=step.kind,
+            output_schema=step.output_schema,
+            instructions=step_instructions,
+            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
+        logger.info("%s: model=%s step=%s schema=%s > Calling model", prefix, self.model_spec.model_name, step.id, step.output_schema)
+        try:
+            result = await agent.run(user_prompt)
+        except UnexpectedModelBehavior as error:
+            raise QuickAgentUnexpectedModelBehaviorException(
+                original_exception=error,
+                request_context=self._unexpected_model_behavior_request_context(
+                    instructions=step_instructions,
+                    system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+                    user_prompt=user_prompt,
+                    model_settings=model_settings,
+                ),
+            ) from error
+        except ModelHTTPError as error:
+            mapped_error = self._map_model_http_error(error)
+            if mapped_error is not None:
+                raise mapped_error from error
+            raise error
         raw_output = result.output
         if isinstance(raw_output, BaseModel):
             parsed = raw_output
@@ -323,7 +609,10 @@ def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]
     return cls
 
 
-def build_model(model_spec: ModelSpec) -> OpenAIChatModel:
+def build_model(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
     api_key = os.environ.get(model_spec.api_key_env, "noop")
-    provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key)
+    if http_client is None:
+        provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key)
+    else:
+        provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key, http_client=http_client)
     return OpenAIChatModel(model_spec.model_name, provider=provider)

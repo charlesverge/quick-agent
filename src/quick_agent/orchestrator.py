@@ -30,6 +30,9 @@ class Orchestrator:
         agent_id: str,
         input_data: InputAdaptor | Path,
         extra_tools: list[str] | None = None,
+        record_http_traffic: bool = False,
+        enable_llm_request_logging: bool = False,
+        llm_log_path: Path | str | None = None,
     ) -> BaseModel | str:
         agent = QuickAgent(
             registry=self.registry,
@@ -38,5 +41,8 @@ class Orchestrator:
             agent_id=agent_id,
             input_data=input_data,
             extra_tools=extra_tools,
+            record_http_traffic=record_http_traffic,
+            enable_llm_request_logging=enable_llm_request_logging,
+            llm_log_path=llm_log_path,
         )
         return await agent.run()

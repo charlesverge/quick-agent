@@ -1,6 +1,5 @@
 {
-  "id": "filesystem.list_files",
-  "name": "filesystem.list_files",
+  "name": "filesystem_list_files",
   "description": "List files and subdirectories in a directory. Returns a newline-separated list; directory names are suffixed with '/'.",
   "impl": {
     "kind": "python",

@@ -6,6 +6,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.tools.filesystem.adapter import FilesystemToolAdapter
+from quick_agent.tools.shell.adapter import ShellToolAdapter
 from quick_agent.tools_loader import load_tools
 
 
@@ -255,6 +256,31 @@ def test_find_closest_file_denies_outside_root(tmp_path: Path) -> None:
         adapter.find_closest_file(str(outside), "file")
 
 
+# --- shell run ---
+
+def test_shell_run_executes_command_in_safe_root(tmp_path: Path) -> None:
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    adapter = ShellToolAdapter(DirectoryPermissions(safe_root))
+
+    result = adapter.run("pwd")
+
+    assert "returncode: 0" in result
+    assert f"cwd: {safe_root}" in result
+    assert str(safe_root) in result
+
+
+def test_shell_run_denies_cwd_outside_root(tmp_path: Path) -> None:
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    adapter = ShellToolAdapter(DirectoryPermissions(safe_root))
+
+    with pytest.raises(PermissionError):
+        adapter.run("pwd", cwd=str(outside))
+
+
 # --- load_tools dispatch cycle ---
 
 class _CapturingToolset(FunctionToolset[Any]):
@@ -280,13 +306,13 @@ def test_load_tools_dispatches_append_text_to_adapter(tmp_path: Path, monkeypatc
     import quick_agent.tools_loader as tl_module
     monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
 
-    load_tools([_system_tools_dir()], ["filesystem.append_text"], permissions)
+    load_tools([_system_tools_dir()], ["filesystem_append_text"], permissions)
 
     assert len(capturing.calls) == 1
     func, name = capturing.calls[0]
-    assert name == "filesystem.append_text"
+    assert name == "filesystem_append_text"
     assert isinstance(func.__self__, FilesystemToolAdapter)
-    assert func.__func__ is FilesystemToolAdapter.append_text
+    assert func.__name__ == "append_text"
 
 
 def test_load_tools_dispatches_list_files_to_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -297,13 +323,13 @@ def test_load_tools_dispatches_list_files_to_adapter(tmp_path: Path, monkeypatch
     import quick_agent.tools_loader as tl_module
     monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
 
-    load_tools([_system_tools_dir()], ["filesystem.list_files"], permissions)
+    load_tools([_system_tools_dir()], ["filesystem_list_files"], permissions)
 
     assert len(capturing.calls) == 1
     func, name = capturing.calls[0]
-    assert name == "filesystem.list_files"
+    assert name == "filesystem_list_files"
     assert isinstance(func.__self__, FilesystemToolAdapter)
-    assert func.__func__ is FilesystemToolAdapter.list_files
+    assert func.__name__ == "list_files"
 
 
 def test_load_tools_dispatches_delete_file_to_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -314,13 +340,13 @@ def test_load_tools_dispatches_delete_file_to_adapter(tmp_path: Path, monkeypatc
     import quick_agent.tools_loader as tl_module
     monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
 
-    load_tools([_system_tools_dir()], ["filesystem.delete_file"], permissions)
+    load_tools([_system_tools_dir()], ["filesystem_delete_file"], permissions)
 
     assert len(capturing.calls) == 1
     func, name = capturing.calls[0]
-    assert name == "filesystem.delete_file"
+    assert name == "filesystem_delete_file"
     assert isinstance(func.__self__, FilesystemToolAdapter)
-    assert func.__func__ is FilesystemToolAdapter.delete_file
+    assert func.__name__ == "delete_file"
 
 
 def test_load_tools_dispatches_find_closest_file_to_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,13 +357,30 @@ def test_load_tools_dispatches_find_closest_file_to_adapter(tmp_path: Path, monk
     import quick_agent.tools_loader as tl_module
     monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
 
-    load_tools([_system_tools_dir()], ["filesystem.find_closest_file"], permissions)
+    load_tools([_system_tools_dir()], ["filesystem_find_closest_file"], permissions)
 
     assert len(capturing.calls) == 1
     func, name = capturing.calls[0]
-    assert name == "filesystem.find_closest_file"
+    assert name == "filesystem_find_closest_file"
     assert isinstance(func.__self__, FilesystemToolAdapter)
-    assert func.__func__ is FilesystemToolAdapter.find_closest_file
+    assert func.__name__ == "find_closest_file"
+
+
+def test_load_tools_dispatches_shell_run_to_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    permissions = DirectoryPermissions(safe_root)
+    capturing = _CapturingToolset()
+    import quick_agent.tools_loader as tl_module
+    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+
+    load_tools([_system_tools_dir()], ["shell_run"], permissions)
+
+    assert len(capturing.calls) == 1
+    func, name = capturing.calls[0]
+    assert name == "shell_run"
+    assert isinstance(func.__self__, ShellToolAdapter)
+    assert func.__name__ == "run"
 
 
 # --- multi-step operation cycle ---

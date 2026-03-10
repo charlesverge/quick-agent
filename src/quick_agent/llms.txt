@@ -22,14 +22,15 @@
 - `src/quick_agent/agent_registry.py`: loads agent Markdown files.
 - `src/quick_agent/agent_tools.py`: loads tools and builds the toolset.
 - `src/quick_agent/directory_permissions.py`: enforces safe directory access.
-- `src/quick_agent/tools/**/tool.json`: tool definitions (id, module, function).
+- `src/quick_agent/tools/**/tool.json`: tool definitions
+  (name, module, function).
 - `agents/`: example agents shipped with the repo.
 - `docs/`: CLI, template, and Python usage documentation.
 
 **Agent File Format (Essentials)**
 - Required fields: `name`, `model.base_url`, `model.model_name`, `chain`.
 - Each `chain` step must reference a matching `## step:<id>` section in the body.
-- Tools are referenced by id and resolved from `tool.json` definitions.
+- Tools are referenced by name and resolved from `tool.json` definitions.
 - `safe_dir` must be relative and further scopes file access inside the CLI safe root.
 
 **Safety and Permissions**
@@ -158,12 +159,12 @@ Summarize the draft from state as a title and 2 bullets.
 Use the value at state.steps.draft.
 ```
 
-**Inter-Agent Call Example (agent.call)**
+**Inter-Agent Call Example (agent_call)**
 ```markdown
 ---
 name: "Parent Agent"
 tools:
-  - "agent.call"
+  - "agent_call"
 nested_output: inline
 chain:
   - id: invoke_child

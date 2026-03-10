@@ -19,7 +19,7 @@ class AgentTools:
         self._tool_roots: list[Path] = tool_roots
 
     def build_toolset(self, tool_ids: list[str], permissions: DirectoryPermissions) -> FunctionToolset[Any]:
-        tool_ids_for_disk = [tool_id for tool_id in tool_ids if tool_id != "agent.call"]
+        tool_ids_for_disk = [tool_id for tool_id in tool_ids if tool_id != "agent_call"]
         if tool_ids_for_disk:
             return load_tools(self._tool_roots, tool_ids_for_disk, permissions)
         return FunctionToolset()
@@ -31,7 +31,7 @@ class AgentTools:
         run_input_source_path: str,
         call_agent: Callable[[str, InputAdaptor | Path], Awaitable[BaseModel | str]],
     ) -> None:
-        if "agent.call" not in tool_ids:
+        if "agent_call" not in tool_ids:
             return
 
         tool = AgentCallTool(call_agent, run_input_source_path)

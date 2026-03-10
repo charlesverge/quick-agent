@@ -17,6 +17,7 @@ from quick_agent.models import AgentSpec
 from quick_agent.models import ChainStepSpec
 from quick_agent.models import LoadedAgentFile
 from quick_agent.models import ModelSpec
+from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.quick_agent import resolve_schema
 
@@ -208,6 +209,33 @@ body.
     assert loaded.spec.model.api_key_env == "OPENAI_API_KEY"
     assert loaded.spec.model.model_name == "gpt-5.2"
     assert loaded.spec.model.provider == "openai-compatible"
+
+
+def test_load_agent_file_allows_missing_chain_block(tmp_path: Path) -> None:
+    md = """---
+name: No Chain
+---
+
+## Instructions
+
+Do one pass.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert loaded.spec.chain == []
+
+
+def test_agent_spec_rejects_output_output_schema_when_chain_present() -> None:
+    with pytest.raises(ValueError, match="output.output_schema requires an empty chain"):
+        AgentSpec(
+            name="invalid",
+            model=ModelSpec(base_url="http://x", model_name="m"),
+            chain=[ChainStepSpec(id="s1", kind="text", prompt_section="step:one")],
+            output=OutputSpec(output_schema="Output"),
+            schemas={"Output": "quick_agent.schemas.outputs:BusinessSummary"},
+        )
 
 
 def test_load_agent_file_parses_instructions_and_system_prompt(tmp_path: Path) -> None:
@@ -458,3 +486,68 @@ Explain details here.
     assert "## Details" in loaded.step_prompts["step:one"]
     assert "Explain details here." in loaded.step_prompts["step:one"]
     assert "## Details" in loaded.step_prompts["step:two"]
+
+
+def test_load_agent_file_ignores_headers_inside_fenced_template() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    loaded = LoadedAgentFile(repo_root / "examples" / "rule_checker" / "rules_to_rule_agent.md")
+
+    assert "### Agent file template" in loaded.instructions
+    assert "````markdown" in loaded.instructions
+    assert "## step:evaluate" in loaded.instructions
+    assert "Return only the JSON object, no additional commentary." in loaded.instructions
+    assert "step:evaluate" not in loaded.step_prompts
+    assert "step:plan" in loaded.step_prompts
+    assert "step:execute" in loaded.step_prompts
+
+
+@pytest.mark.parametrize(
+    ("fence", "fence_label"),
+    [
+        ("```", "triple"),
+        ("````", "quad"),
+    ],
+)
+def test_load_agent_file_ignores_headers_inside_embedded_template_fences(
+    tmp_path: Path, fence: str, fence_label: str
+) -> None:
+    md = f"""---
+name: Embedded Fence {fence_label}
+model:
+  base_url: http://localhost
+  model_name: test
+chain:
+  - id: plan
+    kind: text
+    prompt_section: step:plan
+---
+
+## Instructions
+
+Template starts.
+
+{fence}markdown
+# System Prompt
+
+Nested prompt.
+
+## step:evaluate
+
+Nested step body.
+{fence}
+
+Template ends.
+
+## step:plan
+
+Real step body.
+"""
+    md_path = tmp_path / "agent.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    loaded = LoadedAgentFile(md_path)
+    assert "# System Prompt" in loaded.instructions
+    assert "## step:evaluate" in loaded.instructions
+    assert "Nested step body." in loaded.instructions
+    assert "step:evaluate" not in loaded.step_prompts
+    assert loaded.step_prompts["step:plan"] == "Real step body."

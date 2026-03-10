@@ -16,8 +16,8 @@ model:
   temperature: 0.2
   max_tokens: 2048
 tools:
-  - filesystem.read_text
-  - filesystem.write_text
+  - filesystem_read_text
+  - filesystem_write_text
 safe_dir: "examples/agent-a"
 schemas:
   Output: "quick_agent.schemas.outputs:ExampleOutput"
@@ -68,13 +68,12 @@ Each step in `chain` must reference a matching `prompt_section` in the body:
 
 ## Tools
 
-Tools are loaded by id from `tool.json` files.
-A tool definition folder contains a `tool.json` with the `id` matching what you use in `tools`:
+Tools are loaded by `name` from `tool.json` files.
+A tool definition folder contains a `tool.json` with the `name` matching what you use in `tools`:
 
 ```json
 {
-  "id": "filesystem.read_text",
-  "name": "filesystem.read_text",
+  "name": "filesystem_read_text",
   "description": "Read a UTF-8 file",
   "impl": {
     "kind": "python",

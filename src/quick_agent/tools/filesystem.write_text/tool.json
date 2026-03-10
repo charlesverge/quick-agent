@@ -1,6 +1,5 @@
 {
-  "id": "filesystem.write_text",
-  "name": "filesystem.write_text",
+  "name": "filesystem_write_text",
   "description": "Write a UTF-8 text file to disk. Returns the written path.",
   "impl": {
     "kind": "python",

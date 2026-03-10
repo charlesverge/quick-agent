@@ -1,6 +1,5 @@
 {
-  "id": "filesystem.append_text",
-  "name": "filesystem.append_text",
+  "name": "filesystem_append_text",
   "description": "Append UTF-8 text to a file. Creates the file if it does not exist. Returns the file path.",
   "impl": {
     "kind": "python",

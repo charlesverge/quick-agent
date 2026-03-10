@@ -26,7 +26,7 @@ anyio.run(main)
 
 ## Inter-Agent Calls
 
-Use the `agent.call` tool id in your agent front matter, then invoke the tool by its function name `agent_call` from the prompt.
+Use the `agent_call` tool name in your agent front matter, then invoke the tool by its function name `agent_call` from the prompt.
 
 Example agent pair:
 
@@ -55,7 +55,7 @@ Reply with exactly: pong
 ---
 name: "Parent Agent"
 tools:
-  - "agent.call"
+  - "agent_call"
 chain:
   - id: invoke
     kind: text
@@ -104,7 +104,7 @@ Call agent_call with agent "child" and input_text "hello from memory".
 Then respond with only the returned text value.
 ```
 
-This uses the same `agent.call` tool but avoids creating a temporary input file.
+This uses the same `agent_call` tool but avoids creating a temporary input file.
 
 ## Input Adaptors
 

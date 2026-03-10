@@ -1,15 +1,20 @@
+import json
 import sys
 import types
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import httpx
 import pytest
 from pydantic import BaseModel
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent import quick_agent as qa_module
+from quick_agent import single_shot as single_shot_module
 from quick_agent import agent_tools as tools_module
 from quick_agent import input_adaptors as input_adaptors_module
 from quick_agent.agent_call_tool import AgentCallTool
@@ -24,6 +29,9 @@ from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.orchestrator import Orchestrator
+from quick_agent.exceptions import QuickAgentChatNotSupportedException
+from quick_agent.exceptions import QuickAgentToolsNotSupportedException
+from quick_agent.exceptions import QuickAgentUnexpectedModelBehaviorException
 from quick_agent.quick_agent import QuickAgent
 from quick_agent.quick_agent import build_model
 from quick_agent.quick_agent import resolve_schema
@@ -66,12 +74,13 @@ class RecordingToolset(FunctionToolset[Any]):
 
 
 class FakeAgentResult:
-    def __init__(self, output: str) -> None:
+    def __init__(self, output: Any) -> None:
         self.output = output
 
 
 class FakeAgent:
-    next_output = ""
+    next_output: Any = ""
+    next_error: Exception | None = None
     last_init: dict[str, Any] | None = None
     last_prompt: str | None = None
 
@@ -95,7 +104,16 @@ class FakeAgent:
 
     async def run(self, user_prompt: str) -> FakeAgentResult:
         FakeAgent.last_prompt = user_prompt
+        if FakeAgent.next_error is not None:
+            error = FakeAgent.next_error
+            FakeAgent.next_error = None
+            raise error
         return FakeAgentResult(FakeAgent.next_output)
+
+
+class OpenAIResponseStub:
+    def __init__(self, content: str) -> None:
+        self.choices = [types.SimpleNamespace(message=types.SimpleNamespace(content=content, refusal=None))]
 
 
 class LoadToolsRecorder:
@@ -204,6 +222,43 @@ def _permissions(tmp_path: Path | None = None) -> DirectoryPermissions:
     return DirectoryPermissions(root)
 
 
+def _make_quick_agent_for_test(
+    *,
+    loaded: LoadedAgentFile | None = None,
+    run_input: RunInput | None = None,
+    model: OpenAIChatModel | None = None,
+    toolset: FunctionToolset[Any] | None = None,
+    enable_llm_request_logging: bool = False,
+    llm_log_path: Path | str | None = None,
+) -> QuickAgent:
+    if loaded is None:
+        loaded = _make_loaded_with_chain([ChainStepSpec(id="s1", kind="text", prompt_section="step:one")])
+    if run_input is None:
+        run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    registry = FakeRegistry(loaded)
+    tools = AgentTools([])
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=_permissions(),
+        agent_id="a",
+        input_data=input_adaptors_module.TextInput(run_input.text),
+        extra_tools=None,
+        model=loaded.spec.model,
+        write_output=False,
+        record_http_traffic=False,
+        enable_llm_request_logging=enable_llm_request_logging,
+        llm_log_path=llm_log_path,
+    )
+    agent.run_input = run_input
+    agent.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    if model is not None:
+        agent.model = model
+    if toolset is not None:
+        agent.toolset = toolset
+    return agent
+
+
 def test_init_sets_registry_and_tool_roots(tmp_path: Path) -> None:
     orch = Orchestrator([tmp_path], [tmp_path / "tools"], safe_dir=_permissions(tmp_path).root)
 
@@ -262,7 +317,7 @@ def test_build_toolset_filters_agent_call(monkeypatch: pytest.MonkeyPatch, tmp_p
     recorder = LoadToolsRecorder(sentinel_toolset)
     monkeypatch.setattr(tools_module, "load_tools", recorder)
     tools = AgentTools([tmp_path])
-    toolset = tools.build_toolset(["tool.a", "agent.call", "tool.b"], _permissions(tmp_path))
+    toolset = tools.build_toolset(["tool.a", "agent_call", "tool.b"], _permissions(tmp_path))
 
     assert toolset is sentinel_toolset
     assert len(recorder.calls) == 1
@@ -276,7 +331,7 @@ def test_build_toolset_returns_empty_for_agent_call_only(monkeypatch: pytest.Mon
     recorder = LoadToolsRecorder(RecordingToolset())
     monkeypatch.setattr(tools_module, "load_tools", recorder)
     tools = AgentTools([tmp_path])
-    toolset = tools.build_toolset(["agent.call"], _permissions(tmp_path))
+    toolset = tools.build_toolset(["agent_call"], _permissions(tmp_path))
 
     assert isinstance(toolset, FunctionToolset)
     assert recorder.calls == []
@@ -287,7 +342,7 @@ def test_maybe_inject_agent_call_tool_adds_when_requested() -> None:
     toolset = RecordingToolset()
 
     tools.maybe_inject_agent_call(
-        ["agent.call"],
+        ["agent_call"],
         toolset,
         "run/input.json",
         AsyncCallRecorder(return_value={"text": "ok"}),
@@ -344,7 +399,7 @@ async def test_agent_call_tool_rejects_missing_or_duplicate_input() -> None:
 
 
 def test_init_state_contains_agent_id_and_steps() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
 
     qa._agent_id = "agent-1"
     state = qa._init_state()
@@ -353,7 +408,7 @@ def test_init_state_contains_agent_id_and_steps() -> None:
 
 
 def test_build_model_settings_openai_compatible() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     spec = ModelSpec(base_url="http://x", model_name="m", provider="openai-compatible")
 
     settings = qa._build_model_settings(spec)
@@ -362,7 +417,7 @@ def test_build_model_settings_openai_compatible() -> None:
 
 
 def test_build_model_settings_openai_endpoint_skips_format() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     spec = ModelSpec(
         base_url="https://api.openai.com/v1",
         model_name="m",
@@ -375,7 +430,7 @@ def test_build_model_settings_openai_endpoint_skips_format() -> None:
 
 
 def test_build_model_settings_other_provider() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     spec = ModelSpec(base_url="http://x", model_name="m", provider="other")
 
     settings = qa._build_model_settings(spec)
@@ -384,7 +439,7 @@ def test_build_model_settings_other_provider() -> None:
 
 
 def test_build_structured_model_settings_non_openai_passthrough() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     schema = ExampleSchema
     settings: ModelSettings = {"extra_body": {"format": "json"}}
     qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://localhost"))
@@ -396,10 +451,9 @@ def test_build_structured_model_settings_non_openai_passthrough() -> None:
 
 
 def test_build_structured_model_settings_openai_injects_schema() -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     schema = ExampleSchema
     qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
-    qa.model_settings_json = None
 
     result = qa._build_structured_model_settings(schema_cls=schema)
 
@@ -423,7 +477,7 @@ def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> No
     recorder = SyncCallRecorder(return_value="prompt")
     monkeypatch.setattr(qa_module, "make_user_prompt", recorder)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.run_input = run_input
     qa.state = {"agent_id": "agent-1", "steps": {}, "final_output": None}
@@ -446,10 +500,10 @@ async def test_run_text_step_raises_for_missing_section(monkeypatch: pytest.Monk
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -470,10 +524,10 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -499,10 +553,10 @@ async def test_run_text_step_omits_tools_when_disabled(monkeypatch: pytest.Monke
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
@@ -541,9 +595,10 @@ async def test_run_step_structured_parses_json_with_fallback(monkeypatch: pytest
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
-        qa = object.__new__(QuickAgent)
+        qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
         qa.model = cast(OpenAIChatModel, object())
+        qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
         qa.model_settings_json = {"extra_body": {"format": "json"}}
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
@@ -569,10 +624,10 @@ async def test_run_step_unknown_kind_raises(monkeypatch: pytest.MonkeyPatch) -> 
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
@@ -590,9 +645,10 @@ async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPa
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -627,10 +683,10 @@ async def test_run_text_step_no_instructions_or_system_prompt(monkeypatch: pytes
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -668,10 +724,10 @@ async def test_run_text_step_system_prompt_only(monkeypatch: pytest.MonkeyPatch)
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -709,10 +765,10 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -731,15 +787,62 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.anyio
+async def test_run_text_step_logs_llm_request_payload_immediately(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_output = "ok"
+    monkeypatch.chdir(tmp_path)
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step], output=OutputSpec(file=None))
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+
+    log_path = tmp_path / "log" / "custom.log"
+    qa = _make_quick_agent_for_test(
+        loaded=loaded,
+        run_input=run_input,
+        enable_llm_request_logging=True,
+        llm_log_path=log_path,
+    )
+    qa._agent_id = "agent-1"
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    await qa._run_text_step(
+        step=step,
+    )
+
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    entries = [entry for entry in log_text.split("[LLM_REQUEST]\n") if entry.strip()]
+    assert len(entries) == 1
+    entry_payload = json.loads(entries[0])
+
+    assert entry_payload["request_state"] == "before_request_start"
+    assert entry_payload["agent_id"] == "agent-1"
+    assert entry_payload["step"]["id"] == "s1"
+    assert entry_payload["step"]["kind"] == "text"
+    assert entry_payload["instructions"] == "systemdo thing"
+    assert entry_payload["user_prompt"] == make_user_prompt(run_input, qa.state)
+    assert "\"timestamp_utc\": \"" in entries[0]
+
+
+@pytest.mark.anyio
 async def test_run_structured_step_missing_schema_raises() -> None:
     step = ChainStepSpec(id="s1", kind="structured", prompt_section="step:one", output_schema=None)
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
     with pytest.raises(ValueError):
@@ -773,10 +876,10 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
-        qa = object.__new__(QuickAgent)
+        qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
         qa.model = cast(OpenAIChatModel, object())
-        qa.model_settings_json = None
+        qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
         qa.run_input = run_input
@@ -816,10 +919,10 @@ async def test_run_structured_step_adds_json_schema_for_openai(monkeypatch: pyte
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
 
     try:
-        qa = object.__new__(QuickAgent)
+        qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
         qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
-        qa.model_settings_json = None
+        qa.model_spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m")
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
         qa.run_input = run_input
@@ -848,7 +951,7 @@ async def test_run_chain_updates_state_and_returns_last() -> None:
     qa = RecordingQuickAgent(outputs=[({"a": 1}, "first"), ("b", "second")])
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
@@ -863,7 +966,7 @@ async def test_run_chain_updates_state_and_returns_last() -> None:
 
 @pytest.mark.anyio
 async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
     FakeAgent.next_output = "hello"
 
     spec = AgentSpec(
@@ -880,10 +983,10 @@ async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.Monk
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -900,7 +1003,7 @@ async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.Monk
 
 @pytest.mark.anyio
 async def test_run_chain_single_shot_instructions_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
     FakeAgent.next_output = "hello"
 
     spec = AgentSpec(
@@ -917,10 +1020,10 @@ async def test_run_chain_single_shot_instructions_only(monkeypatch: pytest.Monke
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
 
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
-    qa.model_settings_json = None
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
@@ -935,6 +1038,392 @@ async def test_run_chain_single_shot_instructions_only(monkeypatch: pytest.Monke
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
+@pytest.mark.anyio
+async def test_run_text_step_maps_tools_not_supported_to_quick_agent_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_error = ModelHTTPError(
+        status_code=400,
+        model_name="deepseek-r1:14b",
+        body={"message": "registry.ollama.ai/library/deepseek-r1:14b does not support tools"},
+    )
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step])
+    run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="deepseek-r1:14b")
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    with pytest.raises(QuickAgentToolsNotSupportedException):
+        await qa._run_text_step(step=step)
+
+
+@pytest.mark.anyio
+async def test_run_single_shot_maps_chat_not_supported_to_quick_agent_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
+    FakeAgent.next_error = ModelHTTPError(
+        status_code=400,
+        model_name="nomic-embed-text:v1.5",
+        body={"message": "\"nomic-embed-text:v1.5\" does not support chat"},
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="nomic-embed-text:v1.5"),
+        chain=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Use the tool.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="nomic-embed-text:v1.5")
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    with pytest.raises(QuickAgentChatNotSupportedException):
+        await qa._run_single_shot()
+
+
+@pytest.mark.anyio
+async def test_run_single_shot_structured_uses_schema_output_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class ForbiddenAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AssertionError("pydantic_ai.Agent should not be used for structured single-shot mode.")
+
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> OpenAIResponseStub:
+            captured["create_kwargs"] = kwargs
+            return OpenAIResponseStub("{\"msg\":\"ok\"}")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str, base_url: str, http_client: Any) -> None:
+            captured["init_kwargs"] = {"api_key": api_key, "base_url": base_url, "http_client": http_client}
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(single_shot_module, "Agent", ForbiddenAgent)
+    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="https://api.openai.com/v1", model_name="gpt-5.2"),
+        chain=[],
+        schemas={"Output": "test_orchestrator:OutputSchema"},
+        output=OutputSpec(file=None, output_schema="Output"),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Return structured output.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
+    qa.model_spec = spec.model
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_single_shot()
+
+    assert isinstance(output, OutputSchema)
+    assert output.msg == "ok"
+    init_kwargs = captured["init_kwargs"]
+    assert init_kwargs["api_key"] == "test-key"
+    assert init_kwargs["base_url"] == "https://api.openai.com/v1"
+    create_kwargs = captured["create_kwargs"]
+    assert create_kwargs["model"] == "gpt-5.2"
+    response_format = create_kwargs["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "OutputSchema"
+    assert response_format["json_schema"]["strict"] is True
+
+
+@pytest.mark.anyio
+async def test_run_single_shot_structured_parses_json_with_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> OpenAIResponseStub:
+            _ = kwargs
+            return OpenAIResponseStub("preface {\"msg\":\"ok\"} suffix")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str, base_url: str, http_client: Any) -> None:
+            _ = (api_key, base_url, http_client)
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        schemas={"Output": "test_orchestrator:OutputSchema"},
+        output=OutputSpec(file=None, output_schema="Output"),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Return structured output.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = spec.model
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_single_shot()
+
+    assert isinstance(output, OutputSchema)
+    assert output.msg == "ok"
+
+
+@pytest.mark.anyio
+async def test_run_single_shot_structured_rejects_tools() -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        tools=["agent_call"],
+        schemas={"Output": "test_orchestrator:OutputSchema"},
+        output=OutputSpec(file=None, output_schema="Output"),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Return structured output.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = spec.model
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    with pytest.raises(ValueError, match="output.output_schema does not support tools"):
+        await qa._run_single_shot()
+
+
+@pytest.mark.anyio
+async def test_run_single_shot_structured_uses_pydantic_ai_when_flag_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ForbiddenAsyncOpenAI:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+            raise AssertionError("OpenAI SDK path should not be used when single_shot_use_pydantic_ai=true.")
+
+    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", ForbiddenAsyncOpenAI)
+    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
+    FakeAgent.next_output = {"msg": "ok"}
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        single_shot_use_pydantic_ai=True,
+        schemas={"Output": "test_orchestrator:OutputSchema"},
+        output=OutputSpec(file=None, output_schema="Output"),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Return structured output.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = spec.model
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_single_shot()
+
+    assert isinstance(output, OutputSchema)
+    assert output.msg == "ok"
+    assert FakeAgent.last_init is not None
+    assert FakeAgent.last_init["output_type"] is OutputSchema
+
+
+@pytest.mark.anyio
+async def test_run_text_step_wraps_unexpected_model_behavior_with_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    request = httpx.Request(
+        method="POST",
+        url="http://localhost:11434/v1/chat/completions",
+        headers={"x-test-header": "abc"},
+        content=b'{"messages":[{"role":"user","content":"hello"}]}',
+    )
+    response = httpx.Response(
+        status_code=500,
+        request=request,
+        headers={"x-response-id": "resp-1"},
+        content=b'{"error":"internal"}',
+    )
+    cause = httpx.HTTPStatusError("Server error", request=request, response=response)
+    unexpected_error = UnexpectedModelBehavior("Unexpected response", body='{"error":"internal"}')
+    unexpected_error.__cause__ = cause
+    FakeAgent.next_error = unexpected_error
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step])
+    run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    with pytest.raises(QuickAgentUnexpectedModelBehaviorException) as raised:
+        await qa._run_text_step(step=step)
+    assert raised.value.details["unexpected_model_behavior_body"] == '{\n  "error": "internal"\n}'
+    request_details = raised.value.details["request"]
+    assert request_details == {
+        "method": "POST",
+        "url": "http://localhost:11434/v1/chat/completions",
+        "headers": {
+            "host": "localhost:11434",
+            "x-test-header": "abc",
+            "content-length": "48",
+        },
+        "body": '{"messages":[{"role":"user","content":"hello"}]}',
+    }
+    response_details = raised.value.details["response"]
+    assert response_details == {
+        "status_code": 500,
+        "headers": {
+            "x-response-id": "resp-1",
+            "content-length": "20",
+        },
+        "body": '{"error":"internal"}',
+    }
+    curl_command = raised.value.to_curl()
+    assert "curl -X POST" in curl_command
+    assert "-H 'x-test-header: abc'" in curl_command
+    assert "--data-raw '{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'" in curl_command
+    assert "http://localhost:11434/v1/chat/completions" in curl_command
+
+
+def test_unexpected_model_behavior_to_curl_reconstructs_when_request_missing() -> None:
+    unexpected_error = UnexpectedModelBehavior("Exceeded maximum retries (1) for output validation")
+    exc = QuickAgentUnexpectedModelBehaviorException(
+        original_exception=unexpected_error,
+        request_context={
+            "base_url": "http://localhost:11434/v1",
+            "model_name": "llama3",
+            "instructions": "Use tools if needed.",
+            "system_prompt": "You are concise.",
+            "user_prompt": "Summarize this file.",
+            "model_settings": {"extra_body": {"format": "json"}},
+        },
+    )
+    curl_command = exc.to_curl()
+    assert "curl -X POST" in curl_command
+    assert "http://localhost:11434/v1/chat/completions" in curl_command
+    assert "-H 'Content-Type: application/json'" in curl_command
+    assert "\"model\": \"llama3\"" in curl_command
+    assert "\"format\": \"json\"" in curl_command
+
+
+@pytest.mark.anyio
+async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_for_curl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
+    FakeAgent.next_error = UnexpectedModelBehavior("Exceeded maximum retries (1) for output validation")
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step])
+    run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, object())
+    qa.model_spec = ModelSpec(base_url="http://base.invalid/v1", model_name="m")
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+    qa._http_traffic_entries = [
+        {
+            "event": "request",
+            "request": {
+                "method": "POST",
+                "url": "http://from-log/v1/chat/completions",
+                "headers": {"Content-Type": "application/json"},
+                "body": "{\"test\":1}",
+            },
+        }
+    ]
+    with pytest.raises(QuickAgentUnexpectedModelBehaviorException) as raised:
+        await qa._run_text_step(step=step)
+    assert raised.value.details["request_source"] == "quick_agent_http_traffic_log"
+    request_details = raised.value.details["request"]
+    assert request_details == {
+        "method": "POST",
+        "url": "http://from-log/v1/chat/completions",
+        "headers": {"Content-Type": "application/json"},
+        "body": "{\"test\":1}",
+    }
+    curl_command = raised.value.to_curl()
+    assert "http://from-log/v1/chat/completions" in curl_command
+
+
+@pytest.mark.anyio
+async def test_http_hook_recorders_store_entries_on_quick_agent() -> None:
+    qa = _make_quick_agent_for_test()
+    qa.model_settings_json = None
+    request = httpx.Request(
+        method="POST",
+        url="http://localhost:11434/v1/chat/completions",
+        headers={"x-test-header": "abc"},
+        content=b'{"messages":[{"role":"user","content":"hello"}]}',
+    )
+    response = httpx.Response(
+        status_code=200,
+        request=request,
+        headers={"x-response-id": "resp-1"},
+        content=b'{"id":"ok"}',
+    )
+    await qa._record_http_request(request)
+    await qa._record_http_response(response)
+    assert len(qa.http_request_log) == 1
+    assert len(qa.http_response_log) == 1
+    assert qa.http_request_log[0]["method"] == "POST"
+    assert qa.http_response_log[0]["status_code"] == 200
+    context = qa._last_http_exchange_context()
+    assert context["request_source"] == "quick_agent_http_traffic_log"
+    assert context["request"] == qa.http_request_log[-1]
+    assert context["response"] == qa.http_response_log[-1]
+
+
 def test_write_final_output_serializes_model(tmp_path: Path) -> None:
     safe_root = tmp_path / "safe"
     out_path = safe_root / "out.json"
@@ -943,7 +1432,7 @@ def test_write_final_output_serializes_model(tmp_path: Path) -> None:
     loaded = _make_loaded_with_chain([step], output=output)
 
     permissions = DirectoryPermissions(safe_root)
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
     result_path = qa._write_final_output(OutputSchema(msg="hi"))
@@ -960,7 +1449,7 @@ def test_write_final_output_writes_text(tmp_path: Path) -> None:
     loaded = _make_loaded_with_chain([step], output=output)
 
     permissions = DirectoryPermissions(safe_root)
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
     result_path = qa._write_final_output("hello")
@@ -1025,7 +1514,7 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
         name="test",
         model=ModelSpec(base_url="http://x", model_name="m"),
         chain=[step],
-        tools=["tool.a", "agent.call", "tool.a"],
+        tools=["tool.a", "agent_call", "tool.a"],
         output=OutputSpec(file=str(tmp_path / "out.json")),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -1082,7 +1571,10 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     assert load_args[0] == tmp_path / "input.json"
     assert isinstance(load_args[1], DirectoryPermissions)
     assert load_args[1].root == _permissions(tmp_path).root
-    assert build_model_recorder.calls == [((loaded.spec.model,), {})]
+    assert len(build_model_recorder.calls) == 1
+    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
+    assert build_model_args == (loaded.spec.model,)
+    assert "http_client" in build_model_kwargs
 
     assert build_settings_recorder.calls == [((loaded.spec.model,), {})]
 
@@ -1091,7 +1583,7 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     assert kwargs == {}
     assert args[0] == [
         "tool.a",
-        "agent.call",
+        "agent_call",
         "tool.b",
     ]
     assert isinstance(args[1], DirectoryPermissions)
@@ -1100,7 +1592,7 @@ async def test_run_agent_wires_dependencies(monkeypatch: pytest.MonkeyPatch, tmp
     assert maybe_kwargs == {}
     assert maybe_args[0] == [
         "tool.a",
-        "agent.call",
+        "agent_call",
         "tool.b",
     ]
     assert maybe_args[1] is toolset
@@ -1176,6 +1668,81 @@ async def test_run_skips_write_when_output_file_missing(
     assert handoff_recorder.calls == [{"args": ("final",), "kwargs": {}}]
 
 
+def test_init_can_disable_http_traffic_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
+    load_input_recorder = SyncCallRecorder(return_value=run_input)
+    build_model_recorder = SyncCallRecorder(return_value=object())
+    monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
+    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    tools = AgentTools([tmp_path])
+    monkeypatch.setattr(tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset()))
+    fake_registry = FakeRegistry(loaded)
+    QuickAgent(
+        registry=fake_registry,
+        tools=tools,
+        directory_permissions=_permissions(tmp_path),
+        agent_id="agent-1",
+        input_data=tmp_path / "input.json",
+        extra_tools=None,
+        record_http_traffic=False,
+    )
+    assert len(build_model_recorder.calls) == 1
+    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
+    assert build_model_args == (loaded.spec.model,)
+    assert build_model_kwargs == {"http_client": None}
+
+
+def test_init_http_traffic_recording_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
+    load_input_recorder = SyncCallRecorder(return_value=run_input)
+    build_model_recorder = SyncCallRecorder(return_value=object())
+    monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
+    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    tools = AgentTools([tmp_path])
+    monkeypatch.setattr(tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset()))
+    fake_registry = FakeRegistry(loaded)
+    QuickAgent(
+        registry=fake_registry,
+        tools=tools,
+        directory_permissions=_permissions(tmp_path),
+        agent_id="agent-1",
+        input_data=tmp_path / "input.json",
+        extra_tools=None,
+    )
+    assert len(build_model_recorder.calls) == 1
+    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
+    assert build_model_args == (loaded.spec.model,)
+    assert build_model_kwargs == {"http_client": None}
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("nested_output", "expected_write_output"),
@@ -1189,10 +1756,13 @@ async def test_run_nested_agent_respects_nested_output(
     nested_output: Literal["inline", "file"],
     expected_write_output: bool,
 ) -> None:
-    qa = object.__new__(QuickAgent)
+    qa = _make_quick_agent_for_test()
     qa._registry = cast(AgentRegistry, object())
     qa._tools = cast(AgentTools, object())
     qa._directory_permissions = cast(DirectoryPermissions, object())
+    qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
+    qa._enable_llm_request_logging = True
+    qa._llm_log_path = Path("log/custom.log")
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
@@ -1209,3 +1779,5 @@ async def test_run_nested_agent_respects_nested_output(
     assert len(init_recorder.calls) == 1
     _, kwargs = init_recorder.calls[0]
     assert kwargs["write_output"] is expected_write_output
+    assert kwargs["enable_llm_request_logging"] is True
+    assert kwargs["llm_log_path"] == Path("log/custom.log")

@@ -1,0 +1,9 @@
+{
+  "name": "shell_run",
+  "description": "Run a shell command within the permitted directory. Returns return code, cwd, stdout, and stderr.",
+  "impl": {
+    "kind": "python",
+    "module": "quick_agent.tools.shell.adapter",
+    "function": "run"
+  }
+}

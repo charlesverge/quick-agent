@@ -1,6 +1,5 @@
 {
-  "id": "filesystem.read_text",
-  "name": "filesystem.read_text",
+  "name": "filesystem_read_text",
   "description": "Read a UTF-8 text file from disk.",
   "impl": {
     "kind": "python",
