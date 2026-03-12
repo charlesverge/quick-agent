@@ -12,3 +12,5 @@ class ModelSpec(BaseModel):
     model_name: str = Field(default="gpt-5.2")
     temperature: float = 0.2
     max_tokens: int = 2048
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    keepalive_expiry_seconds: float | None = Field(default=None, gt=0)

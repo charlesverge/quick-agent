@@ -1158,6 +1158,56 @@ async def test_run_single_shot_structured_uses_schema_output_type(monkeypatch: p
 
 
 @pytest.mark.anyio
+async def test_run_single_shot_structured_passes_timeout_to_openai_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> OpenAIResponseStub:
+            _ = kwargs
+            return OpenAIResponseStub("{\"msg\":\"ok\"}")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float, http_client: Any) -> None:
+            captured["init_kwargs"] = {
+                "api_key": api_key,
+                "base_url": base_url,
+                "timeout": timeout,
+                "http_client": http_client,
+            }
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="https://api.openai.com/v1", model_name="gpt-5.2", timeout_seconds=77.0),
+        chain=[],
+        schemas={"Output": "test_orchestrator:OutputSchema"},
+        output=OutputSpec(file=None, output_schema="Output"),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Return structured output.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    qa.loaded = loaded
+    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
+    qa.model_spec = spec.model
+    qa.toolset = RecordingToolset()
+    qa.tool_ids = []
+    qa.run_input = run_input
+    qa.state = {"agent_id": "a", "steps": {}, "final_output": None}
+
+    output = await qa._run_single_shot()
+
+    assert isinstance(output, OutputSchema)
+    init_kwargs = captured["init_kwargs"]
+    assert init_kwargs["timeout"] == 77.0
+
+
+@pytest.mark.anyio
 async def test_run_single_shot_structured_parses_json_with_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeCompletions:
         async def create(self, **kwargs: Any) -> OpenAIResponseStub:
@@ -1741,6 +1791,52 @@ def test_init_http_traffic_recording_is_disabled_by_default(
     build_model_args, build_model_kwargs = build_model_recorder.calls[0]
     assert build_model_args == (loaded.spec.model,)
     assert build_model_kwargs == {"http_client": None}
+
+
+@pytest.mark.anyio
+async def test_init_applies_model_http_client_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(
+            base_url="http://x",
+            model_name="m",
+            timeout_seconds=321.0,
+            keepalive_expiry_seconds=123.0,
+        ),
+        chain=[step],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    run_input = RunInput(source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={})
+    load_input_recorder = SyncCallRecorder(return_value=run_input)
+    build_model_recorder = SyncCallRecorder(return_value=object())
+    monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
+    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    tools = AgentTools([tmp_path])
+    monkeypatch.setattr(tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset()))
+    fake_registry = FakeRegistry(loaded)
+    QuickAgent(
+        registry=fake_registry,
+        tools=tools,
+        directory_permissions=_permissions(tmp_path),
+        agent_id="agent-1",
+        input_data=tmp_path / "input.json",
+        extra_tools=None,
+    )
+    assert len(build_model_recorder.calls) == 1
+    _, build_model_kwargs = build_model_recorder.calls[0]
+    http_client = build_model_kwargs["http_client"]
+    assert isinstance(http_client, httpx.AsyncClient)
+    assert http_client.timeout.read == 321.0
+    await http_client.aclose()
 
 
 @pytest.mark.anyio

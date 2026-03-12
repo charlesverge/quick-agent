@@ -15,6 +15,8 @@ model:
   model_name: "llama3"
   temperature: 0.2
   max_tokens: 2048
+  timeout_seconds: 300
+  keepalive_expiry_seconds: 120
 tools:
   - filesystem_read_text
   - filesystem_write_text
@@ -57,6 +59,11 @@ Produce final structured output.
 - `model.base_url`
 - `model.model_name`
 - `chain` (at least one step)
+
+Optional long-running request controls:
+
+- `model.timeout_seconds` to set the LLM request timeout.
+- `model.keepalive_expiry_seconds` to configure HTTP keep-alive reuse window.
 
 ## Step Sections
 

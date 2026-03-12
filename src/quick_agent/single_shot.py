@@ -157,11 +157,20 @@ async def _run_single_shot_structured_via_openai_sdk(
     if agent.has_tools():
         raise ValueError("output.output_schema does not support tools in single-shot mode.")
     api_key = os.environ.get(agent.model_spec.api_key_env, "noop")
-    client = openai.AsyncOpenAI(
-        api_key=api_key,
-        base_url=agent.model_spec.base_url,
-        http_client=agent._http_client,
-    )
+    timeout_seconds = agent.model_spec.timeout_seconds
+    if timeout_seconds is None:
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url=agent.model_spec.base_url,
+            http_client=agent._http_client,
+        )
+    else:
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url=agent.model_spec.base_url,
+            timeout=timeout_seconds,
+            http_client=agent._http_client,
+        )
     messages = _single_shot_messages(
         instructions=instructions,
         system_prompt=system_prompt,
