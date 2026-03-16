@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 import types
@@ -481,7 +482,8 @@ def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> No
     qa.loaded = loaded
     qa.run_input = run_input
     qa.state = {"agent_id": "agent-1", "steps": {}, "final_output": None}
-    result = qa._build_user_prompt()
+
+    result = qa_module.make_user_prompt(run_input, qa.state)
 
     assert result == "prompt"
     assert recorder.calls == [
@@ -638,7 +640,7 @@ async def test_run_step_unknown_kind_raises(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.anyio
-async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_text_step_uses_make_user_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qa_module, "Agent", FakeAgent)
     FakeAgent.next_output = "ok"
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
@@ -652,7 +654,8 @@ async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPa
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa.run_input = run_input
-    monkeypatch.setattr(qa, "_build_user_prompt", SyncCallRecorder(return_value="prompt"))
+    recorder = SyncCallRecorder(return_value="prompt")
+    monkeypatch.setattr(qa_module, "make_user_prompt", recorder)
 
     output, final = await qa._run_text_step(
         step=step,
@@ -661,6 +664,12 @@ async def test_run_text_step_uses_build_user_prompt(monkeypatch: pytest.MonkeyPa
     assert output == "ok"
     assert final == "ok"
     assert FakeAgent.last_prompt == "prompt"
+    assert recorder.calls == [
+        (
+            (run_input, qa.state),
+            {},
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -1752,7 +1761,9 @@ def test_init_can_disable_http_traffic_recording(monkeypatch: pytest.MonkeyPatch
     assert len(build_model_recorder.calls) == 1
     build_model_args, build_model_kwargs = build_model_recorder.calls[0]
     assert build_model_args == (loaded.spec.model,)
-    assert build_model_kwargs == {"http_client": None}
+    http_client = build_model_kwargs.get("http_client")
+    assert isinstance(http_client, httpx.AsyncClient)
+    asyncio.run(http_client.aclose())
 
 
 def test_init_http_traffic_recording_is_disabled_by_default(
@@ -1790,7 +1801,9 @@ def test_init_http_traffic_recording_is_disabled_by_default(
     assert len(build_model_recorder.calls) == 1
     build_model_args, build_model_kwargs = build_model_recorder.calls[0]
     assert build_model_args == (loaded.spec.model,)
-    assert build_model_kwargs == {"http_client": None}
+    http_client = build_model_kwargs.get("http_client")
+    assert isinstance(http_client, httpx.AsyncClient)
+    asyncio.run(http_client.aclose())
 
 
 @pytest.mark.anyio

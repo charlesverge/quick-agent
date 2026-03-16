@@ -155,9 +155,9 @@ class QuickAgent:
         return None
 
     def _build_http_client(self) -> httpx.AsyncClient | None:
-        timeout_seconds = self.model_spec.timeout_seconds
-        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
-        limits = None
+        timeout_seconds = self.model_spec.timeout_seconds or 60.0
+        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds or 60.0
+        limits: httpx.Limits | None = None
         if keepalive_expiry_seconds is not None:
             limits = httpx.Limits(keepalive_expiry=keepalive_expiry_seconds)
         if self._record_http_traffic:
@@ -242,9 +242,6 @@ class QuickAgent:
             )
 
         raise NotImplementedError(f"Unknown step kind: {step.kind}")
-
-    def _build_user_prompt(self) -> str:
-        return make_user_prompt(self.run_input, self.state)
 
     def _build_step_instructions(self, step_prompt: str) -> str:
         if not self.loaded.instructions:
@@ -463,7 +460,7 @@ class QuickAgent:
         step: ChainStepSpec,
     ) -> tuple[StepOutput, BaseModel | str]:
         prefix = "QuickAgent._run_text_step"
-        user_prompt = self._build_user_prompt()
+        user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
         toolsets = self._toolsets_for_run()
@@ -524,7 +521,7 @@ class QuickAgent:
 
         model_settings = self._build_structured_model_settings(schema_cls=schema_cls)
 
-        user_prompt = self._build_user_prompt()
+        user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
         toolsets = self._toolsets_for_run()
