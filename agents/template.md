@@ -49,7 +49,7 @@ output:
 handoff:
   enabled: false
   agent_id: "postprocess_agent"
-  input_mode: "final_output_json"   # or "final_output_markdown"
+  input_mode: "last_step_output_json"   # or "last_step_output_markdown"
 ---
 
 # System Prompt

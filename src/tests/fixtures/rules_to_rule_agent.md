@@ -36,7 +36,7 @@ output:
 handoff:
   enabled: false
   agent_id: null
-  input_mode: "final_output_json"
+  input_mode: "last_step_output_json"
 ---
 
 # System Prompt

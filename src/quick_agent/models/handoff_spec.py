@@ -10,4 +10,4 @@ from pydantic import BaseModel
 class HandoffSpec(BaseModel):
     enabled: bool = False
     agent_id: Optional[str] = None
-    input_mode: str = "final_output_json"
+    input_mode: str = "last_step_output_json"

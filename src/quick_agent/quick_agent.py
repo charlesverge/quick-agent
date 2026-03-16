@@ -45,7 +45,7 @@ StepOutput: TypeAlias = str | dict[str, Any]
 class ChainState(TypedDict):
     agent_id: str
     steps: dict[str, StepOutput]
-    final_output: StepOutput | None
+    last_step_output: StepOutput | None
 
 
 class QuickAgent:
@@ -112,14 +112,13 @@ class QuickAgent:
             )
 
         try:
-            final_output = await self._run_chain()
-
+            last_step_output = await self._run_chain()
             if self._write_output_file:
-                self._write_final_output(final_output)
+                self._write_last_step_output(last_step_output)
 
-            await self._handle_handoff(final_output)
+            await self._handle_handoff(last_step_output)
 
-            return final_output
+            return last_step_output
         finally:
             self._write_llm_request_log(None)
 
@@ -144,7 +143,7 @@ class QuickAgent:
         return {
             "agent_id": self._agent_id,
             "steps": {},
-            "final_output": None,
+            "last_step_output": None,
         }
 
     def _build_model_settings(self, model_spec: ModelSpec) -> ModelSettings | None:
@@ -230,7 +229,7 @@ class QuickAgent:
         self,
         *,
         step: ChainStepSpec,
-    ) -> tuple[StepOutput, BaseModel | str]:
+    ) -> str | BaseModel:
         if step.kind == "text":
             return await self._run_text_step(
                 step=step,
@@ -458,7 +457,7 @@ class QuickAgent:
         self,
         *,
         step: ChainStepSpec,
-    ) -> tuple[StepOutput, BaseModel | str]:
+    ) -> str:
         prefix = "QuickAgent._run_text_step"
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
@@ -498,7 +497,7 @@ class QuickAgent:
             if mapped_error is not None:
                 raise mapped_error from error
             raise error
-        return result.output, result.output
+        return result.output
 
     async def _run_single_shot(self) -> BaseModel | str:
         prefix = "QuickAgent._run_single_shot"
@@ -513,7 +512,7 @@ class QuickAgent:
         self,
         *,
         step: ChainStepSpec,
-    ) -> tuple[StepOutput, BaseModel | str]:
+    ) -> BaseModel:
         prefix = "QuickAgent._run_structured_step"
         if not step.output_schema:
             raise ValueError(f"Step {step.id} is structured but missing output_schema.")
@@ -571,22 +570,28 @@ class QuickAgent:
             except ValidationError:
                 extracted = extract_first_json_object(raw_output)
                 parsed = schema_cls.model_validate_json(extracted)
-        return parsed.model_dump(), parsed
+        return parsed
 
     async def _run_chain(
         self,
     ) -> BaseModel | str:
         if not self.loaded.spec.chain:
             return await self._run_single_shot()
-        final_output: BaseModel | str = ""
+        last_step_output: BaseModel | str = ""
         for step in self.loaded.spec.chain:
-            step_out, step_final = await self._run_step(
+            step_result = await self._run_step(
                 step=step,
             )
-            self.state["steps"][step.id] = step_out
-            self.state["final_output"] = step_out
-            final_output = step_final
-        return final_output
+            if isinstance(step_result, BaseModel):
+                step_out: StepOutput = step_result.model_dump()
+                self.state["steps"][step.id] = step_out
+                self.state["last_step_output"] = step_out
+                last_step_output = step_result
+            else:
+              self.state["steps"][step.id] = step_result
+              self.state["last_step_output"] = step_result
+              last_step_output = step_result
+        return last_step_output
 
     def has_tools(self) -> bool:
         if not self.tool_ids:
@@ -611,26 +616,26 @@ class QuickAgent:
             return []
         return [toolset]
 
-    def _write_final_output(self, final_output: BaseModel | str) -> Path:
+    def _write_last_step_output(self, last_step_output: BaseModel | str) -> Path:
         output_file = self.loaded.spec.output.file
         if not output_file:
             raise ValueError("Output file is not configured.")
         out_path = Path(output_file)
-        if isinstance(final_output, BaseModel):
+        if isinstance(last_step_output, BaseModel):
             if self.loaded.spec.output.format == "json":
-                write_output(out_path, final_output.model_dump_json(indent=2), self.permissions)
+                write_output(out_path, last_step_output.model_dump_json(indent=2), self.permissions)
             else:
-                write_output(out_path, final_output.model_dump_json(indent=2), self.permissions)
+                write_output(out_path, last_step_output.model_dump_json(indent=2), self.permissions)
         else:
-            write_output(out_path, str(final_output), self.permissions)
+            write_output(out_path, str(last_step_output), self.permissions)
         return out_path
 
-    async def _handle_handoff(self, final_output: BaseModel | str) -> None:
+    async def _handle_handoff(self, last_step_output: BaseModel | str) -> None:
         if self.loaded.spec.handoff.enabled and self.loaded.spec.handoff.agent_id:
-            if isinstance(final_output, BaseModel):
-                payload = final_output.model_dump_json(indent=2)
+            if isinstance(last_step_output, BaseModel):
+                payload = last_step_output.model_dump_json(indent=2)
             else:
-                payload = str(final_output)
+                payload = str(last_step_output)
             await self._run_nested_agent(self.loaded.spec.handoff.agent_id, TextInput(payload))
 
 
