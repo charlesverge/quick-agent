@@ -9,8 +9,10 @@ import openai
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat import ChatCompletionSystemMessageParam
 from openai.types.chat import ChatCompletionUserMessageParam
-from openai.types.chat.completion_create_params import ResponseFormatJSONSchema
+from openai.types.shared_params.response_format_json_schema import ResponseFormatJSONSchema
 from pydantic import BaseModel, ValidationError
+
+from quick_agent.types import AgentResult
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
@@ -59,7 +61,7 @@ def _extract_openai_error_message(error: openai.APIStatusError) -> str:
     return str(error)
 
 
-def _parse_structured_result(raw_output: BaseModel | dict[str, object] | str, schema_cls: Type[BaseModel]) -> BaseModel:
+def _parse_structured_result(raw_output: AgentResult, schema_cls: Type[BaseModel]) -> BaseModel:
     if isinstance(raw_output, BaseModel):
         return raw_output
     if isinstance(raw_output, dict):

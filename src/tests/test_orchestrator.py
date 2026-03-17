@@ -980,7 +980,7 @@ async def test_run_returns_compiled_json_output_when_enabled() -> None:
     async def fake_run_chain() -> str:
         return "b"
 
-    qa._run_chain = fake_run_chain
+    qa._run_chain = fake_run_chain  # type: ignore[assignment]
 
     output = await qa.run()
 
@@ -1001,7 +1001,7 @@ async def test_run_returns_compiled_text_output_when_enabled() -> None:
     async def fake_run_chain() -> str:
         return "second"
 
-    qa._run_chain = fake_run_chain
+    qa._run_chain = fake_run_chain  # type: ignore[assignment]
 
     output = await qa.run()
 
@@ -1040,7 +1040,7 @@ async def test_run_returns_compiled_structured_output_when_enabled() -> None:
     async def fake_run_chain() -> str:
         return "three"
 
-    qa._run_chain = fake_run_chain
+    qa._run_chain = fake_run_chain  # type: ignore[assignment]
 
     output = await qa.run()
 
@@ -1065,7 +1065,7 @@ async def test_run_returns_compiled_output_with_missing_step_keys() -> None:
     async def fake_run_chain() -> str:
         return "two"
 
-    qa._run_chain = fake_run_chain
+    qa._run_chain = fake_run_chain  # type: ignore[assignment]
 
     output = await qa.run()
 

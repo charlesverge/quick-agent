@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 from quick_agent.orchestrator import Orchestrator
+from quick_agent.types import AgentResult
 from pydantic import BaseModel
 
 
@@ -13,7 +14,7 @@ async def _run_agent(orchestrator: Orchestrator, agent_id: str, input_path: Path
     return result
 
 
-async def _run_agent_any(orchestrator: Orchestrator, agent_id: str, input_path: Path) -> BaseModel | str:
+async def _run_agent_any(orchestrator: Orchestrator, agent_id: str, input_path: Path) -> AgentResult:
     return await orchestrator.run(agent_id, input_path)
 
 

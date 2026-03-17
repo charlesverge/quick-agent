@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-
-from pydantic import BaseModel
+from quick_agent.types import AgentResult
 from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.agent_call_tool import AgentCallTool
@@ -29,7 +28,7 @@ class AgentTools:
         tool_ids: list[str],
         toolset: FunctionToolset[Any],
         run_input_source_path: str,
-        call_agent: Callable[[str, InputAdaptor | Path], Awaitable[BaseModel | str]],
+        call_agent: Callable[[str, InputAdaptor | Path], Awaitable[AgentResult]],
     ) -> None:
         if "agent_call" not in tool_ids:
             return

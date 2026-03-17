@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 import httpx
 from pydantic import BaseModel, ValidationError
+
+from quick_agent.types import AgentResult
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
@@ -100,7 +102,7 @@ class QuickAgent:
             llm_log_path = Path("log/results.log")
         self._llm_log_path: Path = Path(llm_log_path)
 
-    async def run(self) -> BaseModel | dict[str, object] | str:
+    async def run(self) -> AgentResult:
         if self.has_tools():
             if self.toolset is None:
                 raise ValueError("Toolset is missing while tools are enabled.")
@@ -114,7 +116,7 @@ class QuickAgent:
         try:
             last_step_output = await self._run_chain()
 
-            output: BaseModel | dict[str, object] | str = last_step_output
+            output: AgentResult = last_step_output
             if self.loaded.spec.output.return_compiled_output:
                 output = self._compiled_output(last_step_output)
 
@@ -127,7 +129,7 @@ class QuickAgent:
         finally:
             self._write_llm_request_log(None)
 
-    async def _run_nested_agent(self, agent_id: str, input_data: InputAdaptor | Path) -> BaseModel | str:
+    async def _run_nested_agent(self, agent_id: str, input_data: InputAdaptor | Path) -> AgentResult:
         nested_write_output = self.loaded.spec.nested_output == "file"
         agent = QuickAgent(
             registry=self._registry,
@@ -598,7 +600,7 @@ class QuickAgent:
               last_step_output = step_result
         return last_step_output
 
-    def _compiled_output(self, last_step_output: BaseModel | str) -> BaseModel | dict[str, object] | str:
+    def _compiled_output(self, last_step_output: BaseModel | str) -> AgentResult:
         # When enabled, return a combined view of all step outputs instead of the last step output.
         if not self.loaded.spec.chain:
             return last_step_output
@@ -668,7 +670,7 @@ class QuickAgent:
             return []
         return [toolset]
 
-    def _write_last_step_output(self, last_step_output: BaseModel | dict[str, object] | str) -> Path:
+    def _write_last_step_output(self, last_step_output: AgentResult) -> Path:
         output_file = self.loaded.spec.output.file
         if not output_file:
             raise ValueError("Output file is not configured.")

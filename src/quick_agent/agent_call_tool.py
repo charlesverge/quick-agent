@@ -8,12 +8,13 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel
 
 from quick_agent.input_adaptors import InputAdaptor, TextInput
+from quick_agent.types import AgentResult
 
 
 class AgentCallTool:
     def __init__(
         self,
-        call_agent: Callable[[str, InputAdaptor | Path], Awaitable[BaseModel | str]],
+        call_agent: Callable[[str, InputAdaptor | Path], Awaitable[AgentResult]],
         run_input_source_path: str,
     ) -> None:
         self._call_agent = call_agent

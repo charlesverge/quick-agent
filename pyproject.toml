@@ -8,7 +8,7 @@ authors = [
   {name = "Charles Verge", email = "1906614+charlesverge@users.noreply.github.com"}
 ]
 version = "0.1.6"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
   "anyio",
   "pydantic>=2.12.5",
@@ -23,8 +23,6 @@ classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries",
@@ -81,7 +79,7 @@ module = ["pytest"]
 ignore_missing_imports = true
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E9", "F"]

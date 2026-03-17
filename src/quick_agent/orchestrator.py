@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel
+
+from quick_agent.types import AgentResult
 
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
@@ -33,7 +34,7 @@ class Orchestrator:
         record_http_traffic: bool = False,
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
-    ) -> BaseModel | str:
+    ) -> AgentResult:
         agent = QuickAgent(
             registry=self.registry,
             tools=self.tools,

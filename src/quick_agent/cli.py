@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from quick_agent.types import AgentResult
+
 from quick_agent.input_adaptors import InputAdaptor, TextInput
 from quick_agent.orchestrator import Orchestrator
 
@@ -17,7 +19,7 @@ async def run_agent(
     agent_id: str,
     input_adaptor: InputAdaptor | Path,
     extra_tools: list[str],
-) -> BaseModel | str:
+) -> AgentResult:
     return await orch.run(agent_id, input_adaptor, extra_tools=extra_tools)
 
 
