@@ -100,7 +100,7 @@ class QuickAgent:
             llm_log_path = Path("log/results.log")
         self._llm_log_path: Path = Path(llm_log_path)
 
-    async def run(self) -> BaseModel | str:
+    async def run(self) -> BaseModel | dict[str, object] | str:
         if self.has_tools():
             if self.toolset is None:
                 raise ValueError("Toolset is missing while tools are enabled.")
@@ -113,12 +113,17 @@ class QuickAgent:
 
         try:
             last_step_output = await self._run_chain()
+
+            output: BaseModel | dict[str, object] | str = last_step_output
+            if self.loaded.spec.output.return_compiled_output:
+                output = self._compiled_output(last_step_output)
+
             if self._write_output_file:
-                self._write_last_step_output(last_step_output)
+                self._write_last_step_output(output)
 
             await self._handle_handoff(last_step_output)
 
-            return last_step_output
+            return output
         finally:
             self._write_llm_request_log(None)
 
@@ -593,6 +598,53 @@ class QuickAgent:
               last_step_output = step_result
         return last_step_output
 
+    def _compiled_output(self, last_step_output: BaseModel | str) -> BaseModel | dict[str, object] | str:
+        # When enabled, return a combined view of all step outputs instead of the last step output.
+        if not self.loaded.spec.chain:
+            return last_step_output
+
+        fmt = self.loaded.spec.output.format
+        if fmt == "json":
+            return self._compiled_json_output()
+        if fmt == "structured":
+            return self._compiled_structured_output()
+        return self._compiled_text_output()
+
+    def _compiled_json_output(self) -> dict[str, object]:
+        return {
+            **self.state.get("steps", {}),
+            "last_step_output": self.state.get("last_step_output"),
+        }
+
+    def _compiled_text_output(self) -> str:
+        values = []
+        for step_output in self.state.get("steps", {}).values():
+            if isinstance(step_output, dict):
+                values.append(json.dumps(step_output, ensure_ascii=False))
+            else:
+                values.append(str(step_output))
+        return "\n".join(values)
+
+    def _compiled_structured_output(self) -> BaseModel:
+        compiled_schema = self.loaded.spec.output.compiled_schema
+        if not compiled_schema:
+            raise ValueError("output.schema must be set for structured compiled output")
+        schema_cls = resolve_schema(self.loaded, compiled_schema)
+
+        if not hasattr(schema_cls, "model_fields"):
+            raise RuntimeError("Compiled structured output requires a Pydantic model with `model_fields`.")
+        fields = set(schema_cls.model_fields.keys())
+
+        payload: dict[str, object] = {}
+        steps = self.state.get("steps", {})
+        for field in fields:
+            if field == "last_step_output":
+                payload[field] = self.state.get("last_step_output")
+            else:
+                payload[field] = steps.get(field)
+
+        return schema_cls.model_validate(payload)
+
     def has_tools(self) -> bool:
         if not self.tool_ids:
             return False
@@ -616,18 +668,18 @@ class QuickAgent:
             return []
         return [toolset]
 
-    def _write_last_step_output(self, last_step_output: BaseModel | str) -> Path:
+    def _write_last_step_output(self, last_step_output: BaseModel | dict[str, object] | str) -> Path:
         output_file = self.loaded.spec.output.file
         if not output_file:
             raise ValueError("Output file is not configured.")
         out_path = Path(output_file)
         if isinstance(last_step_output, BaseModel):
-            if self.loaded.spec.output.format == "json":
-                write_output(out_path, last_step_output.model_dump_json(indent=2), self.permissions)
-            else:
-                write_output(out_path, last_step_output.model_dump_json(indent=2), self.permissions)
+            text = last_step_output.model_dump_json(indent=2)
+        elif isinstance(last_step_output, dict):
+            text = json.dumps(last_step_output, indent=2)
         else:
-            write_output(out_path, str(last_step_output), self.permissions)
+            text = str(last_step_output)
+        write_output(out_path, text, self.permissions)
         return out_path
 
     async def _handle_handoff(self, last_step_output: BaseModel | str) -> None:

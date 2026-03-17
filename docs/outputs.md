@@ -42,9 +42,76 @@ chain:
 
 Nested agents invoked via `agent_call` or `handoff` do not write output files by default. Control this with `nested_output` in the parent agent front matter:
 
+### json output
+
 ```yaml
 nested_output: inline  # default, no file for nested calls
-# nested_output: file  # allow nested agents to write output.file
+nested_output: file  # allow nested agents to write output.file
+```
+
+## Last chain output vs compiled output
+
+By default the last chain is the return from a run. You can also configure the agent to return the compiled output.
+
+Format json will return the state, which contains a dict with a field name for each step
+
+```yaml
+output:
+  format: json
+  file: out/result.json
+  return_compiled_output: true
+```
+
+Example compiled output:
+
+```json
+{
+  "step1": {"field1": "value1"},
+  "step2": {"field2": "value2"},
+  "last_step_output": {"field2": "value2"}
+}
+```
+
+### Text output
+
+Text output will concatenate the text output of each step in the chain, separated by newlines.
+
+```yaml
+output:
+  file: out/result.txt
+  return_compiled_output: true
+```
+
+Example compiled output:
+
+```text
+step1 result 1
+step2 result 2
+```
+
+### Structured output
+
+For structured output, a schema must be defined and for each step which you want an output a field name must exist.
+
+```yaml
+output:
+  format: structured
+  schema: "schemas.outputs:FinalOutput"
+  return_compiled_output: true
+```
+
+```python
+class FinalOutput(BaseModel):
+    step1: Step1Output
+    step2: Step2Output
+    step3: Step3Output
+    last_step_output: step2: Step3Output
+```
+
+```python
+class FinalOutput(BaseModel):
+    step2: Step2Output
+    step3: Step2Output
 ```
 
 ## Notes

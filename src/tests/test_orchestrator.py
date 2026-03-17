@@ -968,6 +968,111 @@ async def test_run_chain_updates_state_and_returns_last() -> None:
 
 
 @pytest.mark.anyio
+async def test_run_returns_compiled_json_output_when_enabled() -> None:
+    step1 = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    step2 = ChainStepSpec(id="s2", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step1, step2])
+    loaded.spec.output.return_compiled_output = True
+
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa.state = {"agent_id": "a", "steps": {"s1": {"a": 1}, "s2": "b"}, "last_step_output": "b"}
+
+    async def fake_run_chain() -> str:
+        return "b"
+
+    qa._run_chain = fake_run_chain
+
+    output = await qa.run()
+
+    assert output == {"s1": {"a": 1}, "s2": "b", "last_step_output": "b"}
+
+
+@pytest.mark.anyio
+async def test_run_returns_compiled_text_output_when_enabled() -> None:
+    step1 = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    step2 = ChainStepSpec(id="s2", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step1, step2])
+    loaded.spec.output.return_compiled_output = True
+    loaded.spec.output.format = "markdown"
+
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa.state = {"agent_id": "a", "steps": {"s1": "first", "s2": "second"}, "last_step_output": "second"}
+
+    async def fake_run_chain() -> str:
+        return "second"
+
+    qa._run_chain = fake_run_chain
+
+    output = await qa.run()
+
+    assert output == "first\nsecond"
+
+
+@pytest.mark.anyio
+async def test_run_returns_compiled_structured_output_when_enabled() -> None:
+    # Chain defines 3 steps but compiled output schema only includes step2 and step3.
+    step1 = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    step2 = ChainStepSpec(id="s2", kind="text", prompt_section="step:one")
+    step3 = ChainStepSpec(id="s3", kind="text", prompt_section="step:one")
+
+    class FinalOutput(BaseModel):
+        s2: str
+        s3: str
+
+    schema_module = types.ModuleType("schemas.compiled")
+    schema_module.__dict__["FinalOutput"] = FinalOutput
+    sys.modules["schemas.compiled"] = schema_module
+
+    output_spec = OutputSpec.model_validate(
+        {
+            "file": "out/result.json",
+            "format": "structured",
+            "return_compiled_output": True,
+            "schema": "Final",
+        }
+    )
+
+    loaded = _make_loaded_with_chain([step1, step2, step3], schemas={"Final": "schemas.compiled:FinalOutput"}, output=output_spec)
+
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa.state = {"agent_id": "a", "steps": {"s2": "two", "s3": "three"}, "last_step_output": "three"}
+
+    async def fake_run_chain() -> str:
+        return "three"
+
+    qa._run_chain = fake_run_chain
+
+    output = await qa.run()
+
+    assert isinstance(output, FinalOutput)
+    assert output.model_dump() == {"s2": "two", "s3": "three"}
+
+    sys.modules.pop("schemas.compiled", None)
+
+
+@pytest.mark.anyio
+async def test_run_returns_compiled_output_with_missing_step_keys() -> None:
+    # Even if the chain defines 3 steps, compiled output only reflects steps present in state.
+    step1 = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    step2 = ChainStepSpec(id="s2", kind="text", prompt_section="step:one")
+    step3 = ChainStepSpec(id="s3", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step1, step2, step3])
+    loaded.spec.output.return_compiled_output = True
+
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa.state = {"agent_id": "a", "steps": {"s1": "one", "s2": "two"}, "last_step_output": "two"}
+
+    async def fake_run_chain() -> str:
+        return "two"
+
+    qa._run_chain = fake_run_chain
+
+    output = await qa.run()
+
+    assert output == {"s1": "one", "s2": "two", "last_step_output": "two"}
+
+
+@pytest.mark.anyio
 async def test_run_chain_single_shot_system_prompt_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
     FakeAgent.next_output = "hello"
