@@ -439,6 +439,43 @@ def test_build_model_settings_other_provider() -> None:
     assert settings is None
 
 
+def test_build_model_settings_includes_extra_body() -> None:
+    qa = _make_quick_agent_for_test()
+    spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m", provider="openai-compatible")
+
+    settings = qa._build_model_settings(spec)
+
+    assert settings is None
+
+    qa = _make_quick_agent_for_test()
+    spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m", provider="openai-compatible")
+    qa.extra_body = {"foo": "bar"}
+
+    settings = qa._build_model_settings(spec)
+
+    assert settings == {"extra_body": {"foo": "bar"}}
+
+
+def test_build_model_settings_openai_endpoint_strips_num_ctx() -> None:
+    qa = _make_quick_agent_for_test()
+    spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m", provider="openai-compatible")
+    qa.extra_body = {"options": {"num_ctx": 8192, "other": 1}}
+
+    settings = qa._build_model_settings(spec)
+
+    assert settings == {"extra_body": {"options": {"other": 1}}}
+
+
+def test_build_model_settings_openai_endpoint_strips_num_ctx_all_removed() -> None:
+    qa = _make_quick_agent_for_test()
+    spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m", provider="openai-compatible")
+    qa.extra_body = {"options": {"num_ctx": 8192}}
+
+    settings = qa._build_model_settings(spec)
+
+    assert settings is None
+
+
 def test_build_structured_model_settings_non_openai_passthrough() -> None:
     qa = _make_quick_agent_for_test()
     schema = ExampleSchema

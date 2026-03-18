@@ -7,7 +7,7 @@ license-files = ["LICENSE"]
 authors = [
   {name = "Charles Verge", email = "1906614+charlesverge@users.noreply.github.com"}
 ]
-version = "0.1.6"
+version = "0.1.7"
 requires-python = ">=3.12"
 dependencies = [
   "anyio",

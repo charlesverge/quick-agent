@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Type, TypeAlias, TypedDict
+from typing import Any, Callable, Type, TypeAlias, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class QuickAgent:
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
         extra_headers: dict[str, str] | None = None,
+        extra_body: dict[str, object] | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
@@ -96,6 +97,7 @@ class QuickAgent:
         self.http_response_log: list[dict[str, object]] = []
         self._http_log_max_entries: int = 200
         self.extra_headers = extra_headers or {}
+        self.extra_body = extra_body or {}
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.model: OpenAIChatModel = build_model(self.model_spec, http_client=self._http_client)
         self.state: ChainState = self._init_state()
@@ -164,7 +166,22 @@ class QuickAgent:
         if model_spec.provider == "openai-compatible":
             # Ollama OpenAI-compatible API uses "format": "json" to force JSON output.
             if model_spec.base_url != "https://api.openai.com/v1":
-                settings["extra_body"] = {"format": "json"}
+                extra_body: dict[str, object] = {"format": "json"}
+                if self.extra_body:
+                    extra_body.update(self.extra_body)
+                if extra_body:
+                    settings["extra_body"] = extra_body
+            elif self.extra_body:
+                extra_body = dict(self.extra_body)
+                options = extra_body.get("options")
+                if isinstance(options, dict) and "num_ctx" in options:
+                    options = {k: v for k, v in options.items() if k != "num_ctx"}
+                    if options:
+                        extra_body["options"] = options
+                    else:
+                        extra_body.pop("options", None)
+                if extra_body:
+                    settings["extra_body"] = extra_body
 
         if not settings:
             return None
@@ -179,7 +196,7 @@ class QuickAgent:
             limits = httpx.Limits(max_connections=100, keepalive_expiry=keepalive_expiry_seconds)
 
         headers = self.extra_headers if self.extra_headers else None
-        event_hooks = None
+        event_hooks: dict[str, list[Callable[..., Any]]] | None = None
         if self._record_http_traffic:
             event_hooks = {
                 "request": [self._record_http_request],

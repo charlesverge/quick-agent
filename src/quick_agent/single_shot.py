@@ -155,6 +155,7 @@ async def _run_single_shot_structured_via_openai_sdk(
     user_prompt: str,
     instructions: str | None,
     system_prompt: str | list[str],
+    model_settings: ModelSettings | None,
 ) -> BaseModel:
     if agent.has_tools():
         raise ValueError("output.output_schema does not support tools in single-shot mode.")
@@ -190,12 +191,17 @@ async def _run_single_shot_structured_via_openai_sdk(
                 "strict": True,
             },
         }
+        extra_body = None
+        if model_settings is not None:
+            extra_body = model_settings.get("extra_body")
+
         response = await client.chat.completions.create(
             model=agent.model_spec.model_name,
             messages=messages,
             temperature=agent.model_spec.temperature,
             max_tokens=agent.model_spec.max_tokens,
             response_format=response_format,
+            extra_body=extra_body,
         )
     except openai.APIStatusError as error:
         message = _extract_openai_error_message(error)
@@ -257,4 +263,5 @@ async def run_single_shot(agent: QuickAgent, *, schema_cls: Type[BaseModel] | No
         user_prompt=user_prompt,
         instructions=instructions,
         system_prompt=system_prompt,
+        model_settings=model_settings,
     )
