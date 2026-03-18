@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.tools import Tool
 
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.tools.filesystem.adapter import FilesystemToolAdapter
@@ -290,12 +291,12 @@ class _CapturingToolset(FunctionToolset[Any]):
         super().__init__()
         self.calls: list[tuple[Any, str]] = []
 
-    def add_function(self, *args: Any, **kwargs: Any) -> None:
+    def add_function(self, *args: Any, **kwargs: Any) -> Tool[Any]:
         func = args[0] if args else kwargs.get("func")
         name = kwargs.get("name")
         if func is not None and name is not None:
             self.calls.append((func, name))
-        super().add_function(*args, **kwargs)
+        return super().add_function(*args, **kwargs)
 
 
 def test_load_tools_dispatches_append_text_to_adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

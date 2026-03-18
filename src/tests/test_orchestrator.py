@@ -13,6 +13,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.tools import Tool
 
 from quick_agent import quick_agent as qa_module
 from quick_agent import single_shot as single_shot_module
@@ -66,12 +67,13 @@ class RecordingToolset(FunctionToolset[Any]):
         super().__init__()
         self.add_calls: list[tuple[Any, str, str]] = []
 
-    def add_function(self, *args: Any, **kwargs: Any) -> None:
+    def add_function(self, *args: Any, **kwargs: Any) -> Tool[Any]:
         func = kwargs.get("func")
         name = kwargs.get("name")
         description = kwargs.get("description")
         if func is not None and name is not None and description is not None:
             self.add_calls.append((func, name, description))
+        return super().add_function(*args, **kwargs)
 
 
 class FakeAgentResult:
