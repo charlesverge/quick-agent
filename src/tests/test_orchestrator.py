@@ -1229,7 +1229,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(monkeypatch: p
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(base_url="https://api.openai.com/v1", model_name="gpt-5.2"),
+        model=ModelSpec(base_url="https://api.openai.com/v1", model_name="gpt-4.1-mini"),
         chain=[],
         schemas={"Output": "test_orchestrator:OutputSchema"},
         output=OutputSpec(file=None, output_schema="Output"),
@@ -1258,7 +1258,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(monkeypatch: p
     assert init_kwargs["api_key"] == "test-key"
     assert init_kwargs["base_url"] == "https://api.openai.com/v1"
     create_kwargs = captured["create_kwargs"]
-    assert create_kwargs["model"] == "gpt-5.2"
+    assert create_kwargs["model"] == "gpt-4.1-mini"
     response_format = create_kwargs["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "OutputSchema"

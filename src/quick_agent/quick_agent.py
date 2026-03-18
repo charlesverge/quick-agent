@@ -12,6 +12,7 @@ from typing import Any, Type, TypeAlias, TypedDict
 logger = logging.getLogger(__name__)
 
 import httpx
+from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, ValidationError
 
 from quick_agent.types import AgentResult
@@ -65,6 +66,7 @@ class QuickAgent:
         record_http_traffic: bool = False,
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
@@ -93,14 +95,15 @@ class QuickAgent:
         self.http_request_log: list[dict[str, object]] = []
         self.http_response_log: list[dict[str, object]] = []
         self._http_log_max_entries: int = 200
+        self.extra_headers = extra_headers or {}
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.model: OpenAIChatModel = build_model(self.model_spec, http_client=self._http_client)
-        self.model_settings_json: ModelSettings | None = self._build_model_settings(self.model_spec)
         self.state: ChainState = self._init_state()
         self._enable_llm_request_logging: bool = enable_llm_request_logging
         if llm_log_path is None:
             llm_log_path = Path("log/results.log")
         self._llm_log_path: Path = Path(llm_log_path)
+        self.model_settings_json: ModelSettings | None = self._build_model_settings(self.model_spec)
 
     async def run(self) -> AgentResult:
         if self.has_tools():
@@ -154,57 +157,44 @@ class QuickAgent:
         }
 
     def _build_model_settings(self, model_spec: ModelSpec) -> ModelSettings | None:
+        settings: ModelSettings = {}
+        if self.extra_headers:
+            settings["extra_headers"] = self.extra_headers
+
         if model_spec.provider == "openai-compatible":
             # Ollama OpenAI-compatible API uses "format": "json" to force JSON output.
             if model_spec.base_url != "https://api.openai.com/v1":
-                return {"extra_body": {"format": "json"}}
-        return None
+                settings["extra_body"] = {"format": "json"}
+
+        if not settings:
+            return None
+
+        return settings
 
     def _build_http_client(self) -> httpx.AsyncClient | None:
         timeout_seconds = self.model_spec.timeout_seconds or 60.0
-        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds or 60.0
-        limits: httpx.Limits | None = None
+        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
+        limits: httpx.Limits = DEFAULT_LIMITS
         if keepalive_expiry_seconds is not None:
-            limits = httpx.Limits(keepalive_expiry=keepalive_expiry_seconds)
+            limits = httpx.Limits(max_connections=100, keepalive_expiry=keepalive_expiry_seconds)
+
+        headers = self.extra_headers if self.extra_headers else None
+        event_hooks = None
         if self._record_http_traffic:
-            if timeout_seconds is not None and limits is not None:
-                return httpx.AsyncClient(
-                    event_hooks={
-                        "request": [self._record_http_request],
-                        "response": [self._record_http_response],
-                    },
-                    timeout=timeout_seconds,
-                    limits=limits,
-                )
-            if timeout_seconds is not None:
-                return httpx.AsyncClient(
-                    event_hooks={
-                        "request": [self._record_http_request],
-                        "response": [self._record_http_response],
-                    },
-                    timeout=timeout_seconds,
-                )
-            if limits is not None:
-                return httpx.AsyncClient(
-                    event_hooks={
-                        "request": [self._record_http_request],
-                        "response": [self._record_http_response],
-                    },
-                    limits=limits,
-                )
-            return httpx.AsyncClient(
-                event_hooks={
-                    "request": [self._record_http_request],
-                    "response": [self._record_http_response],
-                }
-            )
-        if timeout_seconds is not None and limits is not None:
-            return httpx.AsyncClient(timeout=timeout_seconds, limits=limits)
-        if timeout_seconds is not None:
-            return httpx.AsyncClient(timeout=timeout_seconds)
-        if limits is not None:
-            return httpx.AsyncClient(limits=limits)
-        return None
+            event_hooks = {
+                "request": [self._record_http_request],
+                "response": [self._record_http_response],
+            }
+
+        if timeout_seconds is None and limits is None and event_hooks is None and headers is None:
+            return None
+
+        return httpx.AsyncClient(
+            timeout=timeout_seconds,
+            limits=limits,
+            headers=headers,
+            event_hooks=event_hooks,
+        )
 
     def _build_structured_model_settings(self, *, schema_cls: Type[BaseModel]) -> ModelSettings | None:
         model_settings: ModelSettings | None = self.model_settings_json

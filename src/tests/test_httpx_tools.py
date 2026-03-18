@@ -21,6 +21,9 @@ from quick_agent.quick_agent import QuickAgent
 from quick_agent import quick_agent as qa_module
 
 
+DEFAULT_MODEL_NAME = "gpt-4.1-mini"
+
+
 def dummy_tool() -> str:
     return "ok"
 
@@ -79,19 +82,19 @@ def _messages_by_role(messages: list[dict[str, Any]], role: str) -> list[dict[st
 async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response("gpt-5")
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
     async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
         provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
-        model = OpenAIChatModel("gpt-5", provider=provider)
+        model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
             chain=[step],
             tools=[],
             output=OutputSpec(file=None),
@@ -130,19 +133,19 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
 async def test_single_shot_with_tools_includes_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response("gpt-5")
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
     async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
         provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
-        model = OpenAIChatModel("gpt-5", provider=provider)
+        model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
             chain=[step],
             tools=["dummy.tool"],
             output=OutputSpec(file=None),
@@ -186,18 +189,18 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
 async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response("gpt-5")
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
     async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
         provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
-        model = OpenAIChatModel("gpt-5", provider=provider)
+        model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
             chain=[],
             tools=[],
             output=OutputSpec(file=None),
@@ -242,18 +245,18 @@ async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
 async def test_single_shot_no_steps_instructions_only_includes_instructions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response("gpt-5")
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
     async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
         provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
-        model = OpenAIChatModel("gpt-5", provider=provider)
+        model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name="gpt-5"),
+            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
             chain=[],
             tools=[],
             output=OutputSpec(file=None),
@@ -293,3 +296,179 @@ async def test_single_shot_no_steps_instructions_only_includes_instructions(
     assert "## Input Content" not in messages[-1]["content"]
     assert "## Chain State (YAML)" not in messages[-1]["content"]
     assert "## Step Instructions" not in messages[-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_single_shot_extra_headers_included_in_httpx_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+        return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
+
+    monkeypatch.setattr(qa_module, "build_model", build_model_stub)
+
+    def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
+
+    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        chain=[],
+        tools=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="You are concise.",
+        step_prompts={},
+    )
+
+    registry = StaticRegistry(loaded)
+    tools = AgentTools([])
+    permissions = DirectoryPermissions(tmp_path)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="agent-1",
+        input_data=TextInput("hello"),
+        extra_tools=None,
+        write_output=False,
+        extra_headers={"X-Test-Header": "test-value"},
+    )
+
+    result = await agent.run()
+
+    # Ensure the transport is properly closed so the test doesn't leak resources.
+    if agent._http_client is not None:
+        await agent._http_client.aclose()
+
+    assert result == "ok"
+    assert len(recorder.requests) == 1
+    assert recorder.requests[0].headers.get("X-Test-Header") == "test-value"
+
+
+@pytest.mark.anyio
+async def test_connection_close_header_included_in_httpx_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+        return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
+
+    monkeypatch.setattr(qa_module, "build_model", build_model_stub)
+
+    def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
+
+    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        chain=[],
+        tools=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="You are concise.",
+        step_prompts={},
+    )
+
+    registry = StaticRegistry(loaded)
+    tools = AgentTools([])
+    permissions = DirectoryPermissions(tmp_path)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="agent-1",
+        input_data=TextInput("hello"),
+        extra_tools=None,
+        write_output=False,
+        extra_headers={"Connection": "close"},
+    )
+
+    result = await agent.run()
+
+    if agent._http_client is not None:
+        await agent._http_client.aclose()
+
+    assert result == "ok"
+    assert len(recorder.requests) == 1
+    assert recorder.requests[0].headers.get("connection") == "close"
+
+
+@pytest.mark.anyio
+async def test_chain_step_extra_headers_included_in_httpx_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+        return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
+
+    monkeypatch.setattr(qa_module, "build_model", build_model_stub)
+
+    def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
+
+    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        chain=[step],
+        tools=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "say hi"},
+    )
+
+    registry = StaticRegistry(loaded)
+    tools = AgentTools([])
+    permissions = DirectoryPermissions(tmp_path)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="agent-1",
+        input_data=TextInput("hello"),
+        extra_tools=None,
+        write_output=False,
+        extra_headers={"X-Test-Header": "test-value"},
+    )
+
+    result = await agent.run()
+
+    if agent._http_client is not None:
+        await agent._http_client.aclose()
+
+    assert result == "ok"
+    assert len(recorder.requests) == 1
+    assert recorder.requests[0].headers.get("X-Test-Header") == "test-value"

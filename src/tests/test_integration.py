@@ -66,7 +66,7 @@ def test_orchestrator_runs_agent_end_to_end(tmp_path: Path) -> None:
     agents_dir.mkdir(parents=True)
 
     base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    model_name = os.environ.get("OPENAI_MODEL") or "gpt-5.2"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4.1-mini"
 
     output_path = safe_root / "out" / "result.json"
     agent_md = f"""---
@@ -178,6 +178,7 @@ Use the extracted JSON from the chain state as the ContactInfo object.
 
 
 def test_orchestrator_runs_true_single_shot_structured_output(tmp_path: Path) -> None:
+    _require_env("OLLAMA_BASE_URL")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
 
@@ -238,6 +239,7 @@ Extract values from the input and return JSON only for the Output schema.
 
 
 def test_orchestrator_runs_true_single_shot_structured_output_inline_only(tmp_path: Path) -> None:
+    _require_env("OLLAMA_BASE_URL")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
 
@@ -504,7 +506,7 @@ def test_file_manager_agent_list_find_read_append(tmp_path: Path) -> None:
     agents_dir.mkdir(parents=True)
 
     base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4o"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4.1-mini"
 
     agent_md = f"""---
 name: File Manager Agent
