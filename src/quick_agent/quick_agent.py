@@ -14,11 +14,8 @@ logger = logging.getLogger(__name__)
 import httpx
 from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, ValidationError
-
-from quick_agent.types import AgentResult
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -27,20 +24,23 @@ from pydantic_ai.toolsets import FunctionToolset
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
-from quick_agent.exceptions import QuickAgentChatNotSupportedException
-from quick_agent.exceptions import QuickAgentException
-from quick_agent.exceptions import QuickAgentToolsNotSupportedException
-from quick_agent.exceptions import QuickAgentUnexpectedModelBehaviorException
+from quick_agent.exceptions import (
+    QuickAgentChatNotSupportedException,
+    QuickAgentException,
+    QuickAgentToolsNotSupportedException,
+    QuickAgentUnexpectedModelBehaviorException,
+)
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
 from quick_agent.json_utils import extract_first_json_object
-from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.chain_step_spec import ChainStepSpec
+from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
 from quick_agent.single_shot import run_single_shot
 from quick_agent.tools_loader import import_symbol
+from quick_agent.types import AgentResult
 
 StepOutput: TypeAlias = str | dict[str, Any]
 
@@ -96,8 +96,17 @@ class QuickAgent:
         self.http_request_log: list[dict[str, object]] = []
         self.http_response_log: list[dict[str, object]] = []
         self._http_log_max_entries: int = 200
-        self.extra_headers = extra_headers or {}
-        self.extra_body = extra_body or {}
+
+        headers: dict[str, str] = dict(self.model_spec.extra_headers or {})
+        if extra_headers is not None:
+            headers.update(extra_headers)
+        self.extra_headers = headers
+
+        body: dict[str, object] = dict(self.model_spec.extra_body or {})
+        if extra_body is not None:
+            body.update(extra_body)
+        self.extra_body = body
+
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.model: OpenAIChatModel = build_model(self.model_spec, http_client=self._http_client)
         self.state: ChainState = self._init_state()
@@ -332,9 +341,6 @@ class QuickAgent:
             return text
         return None
 
-    def _current_model_settings(self) -> ModelSettings | None:
-        return self.model_settings_json
-
     def _normalize_system_prompt(self, text: str) -> str | list[str]:
         if text:
             return text
@@ -483,6 +489,7 @@ class QuickAgent:
             system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
             toolsets=toolsets,
             output_type=str,
+            model_settings=self.model_settings_json,
         )
         self._record_llm_request(
             step_id=step.id,
@@ -491,7 +498,7 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
             user_prompt=user_prompt,
-            model_settings=self._current_model_settings(),
+            model_settings=self.model_settings_json,
         )
         logger.info("%s: model=%s step=%s > Calling model", prefix, self.model_spec.model_name, step.id)
         try:
@@ -503,7 +510,7 @@ class QuickAgent:
                     instructions=step_instructions,
                     system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
                     user_prompt=user_prompt,
-                    model_settings=self._current_model_settings(),
+                    model_settings=self.model_settings_json,
                 ),
             ) from error
         except ModelHTTPError as error:
@@ -537,6 +544,7 @@ class QuickAgent:
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
+        model_settings = self._build_structured_model_settings(schema_cls=schema_cls)
         toolsets = self._toolsets_for_run()
         agent = Agent(
             self.model,

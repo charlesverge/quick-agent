@@ -14,3 +14,5 @@ class ModelSpec(BaseModel):
     max_tokens: int = 2048
     timeout_seconds: float | None = Field(default=None, gt=0)
     keepalive_expiry_seconds: float | None = Field(default=None, gt=0)
+    extra_headers: dict[str, str] | None = None
+    extra_body: dict[str, object] | None = None

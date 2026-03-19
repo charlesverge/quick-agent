@@ -6,21 +6,25 @@ import os
 from typing import TYPE_CHECKING, Type
 
 import openai
-from openai.types.chat import ChatCompletionMessageParam
-from openai.types.chat import ChatCompletionSystemMessageParam
-from openai.types.chat import ChatCompletionUserMessageParam
-from openai.types.shared_params.response_format_json_schema import ResponseFormatJSONSchema
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionUserMessageParam,
+)
+from openai.types.shared_params.response_format_json_schema import (
+    ResponseFormatJSONSchema,
+)
 from pydantic import BaseModel, ValidationError
-
-from quick_agent.types import AgentResult
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.settings import ModelSettings
 
-from quick_agent.exceptions import QuickAgentChatNotSupportedException
-from quick_agent.exceptions import QuickAgentUnexpectedModelBehaviorException
+from quick_agent.exceptions import (
+    QuickAgentChatNotSupportedException,
+    QuickAgentUnexpectedModelBehaviorException,
+)
 from quick_agent.json_utils import extract_first_json_object
+from quick_agent.types import AgentResult
 
 if TYPE_CHECKING:
     from quick_agent.quick_agent import QuickAgent
@@ -161,19 +165,12 @@ async def _run_single_shot_structured_via_openai_sdk(
         raise ValueError("output.output_schema does not support tools in single-shot mode.")
     api_key = os.environ.get(agent.model_spec.api_key_env, "noop")
     timeout_seconds = agent.model_spec.timeout_seconds
-    if timeout_seconds is None:
-        client = openai.AsyncOpenAI(
-            api_key=api_key,
-            base_url=agent.model_spec.base_url,
-            http_client=agent._http_client,
-        )
-    else:
-        client = openai.AsyncOpenAI(
-            api_key=api_key,
-            base_url=agent.model_spec.base_url,
-            timeout=timeout_seconds,
-            http_client=agent._http_client,
-        )
+    client = openai.AsyncOpenAI(
+        api_key=api_key,
+        base_url=agent.model_spec.base_url,
+        timeout=timeout_seconds,
+        http_client=agent._http_client,
+    )
     messages = _single_shot_messages(
         instructions=instructions,
         system_prompt=system_prompt,
@@ -224,7 +221,7 @@ async def run_single_shot(agent: QuickAgent, *, schema_cls: Type[BaseModel] | No
     user_prompt = agent._build_single_shot_prompt()
     instructions = agent._normalize_agent_text(agent.loaded.instructions)
     system_prompt = agent._normalize_system_prompt(agent.loaded.system_prompt)
-    model_settings = agent._current_model_settings()
+    model_settings = agent.model_settings_json
     if schema_cls is not None:
         model_settings = agent._build_structured_model_settings(schema_cls=schema_cls)
 

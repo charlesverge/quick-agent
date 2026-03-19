@@ -472,3 +472,116 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
     assert result == "ok"
     assert len(recorder.requests) == 1
     assert recorder.requests[0].headers.get("X-Test-Header") == "test-value"
+
+
+@pytest.mark.anyio
+async def test_extra_headers_merge_model_spec_and_param(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    recorder = HttpxRequestRecorder(response_json)
+    transport = httpx.MockTransport(recorder)
+
+    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+        return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
+
+    monkeypatch.setattr(qa_module, "build_model", build_model_stub)
+
+    def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
+
+    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(
+            base_url="https://example.test/v1",
+            model_name=DEFAULT_MODEL_NAME,
+            extra_headers={"X-Model-Header": "model-value", "X-Shared": "model"},
+        ),
+        chain=[],
+        tools=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="You are concise.",
+        step_prompts={},
+    )
+
+    registry = StaticRegistry(loaded)
+    tools = AgentTools([])
+    permissions = DirectoryPermissions(tmp_path)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="agent-1",
+        input_data=TextInput("hello"),
+        extra_tools=None,
+        write_output=False,
+        extra_headers={"X-Param-Header": "param-value", "X-Shared": "param"},
+    )
+
+    result = await agent.run()
+
+    if agent._http_client is not None:
+        await agent._http_client.aclose()
+
+    assert result == "ok"
+    assert len(recorder.requests) == 1
+    assert recorder.requests[0].headers.get("X-Param-Header") == "param-value"
+    assert recorder.requests[0].headers.get("X-Model-Header") == "model-value"
+    assert recorder.requests[0].headers.get("X-Shared") == "param"
+
+
+@pytest.mark.anyio
+async def test_extra_body_merge_model_spec_and_param(tmp_path: Path) -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(
+            base_url="https://example.test/v1",
+            model_name=DEFAULT_MODEL_NAME,
+            extra_body={"x": 1, "shared": "model"},
+        ),
+        chain=[],
+        tools=[],
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="",
+        step_prompts={},
+    )
+
+    registry = StaticRegistry(loaded)
+    tools = AgentTools([])
+    permissions = DirectoryPermissions(tmp_path)
+
+    agent = QuickAgent(
+        registry=registry,
+        tools=tools,
+        directory_permissions=permissions,
+        agent_id="agent-1",
+        input_data=TextInput("hello"),
+        extra_tools=None,
+        write_output=False,
+        extra_body={"y": 2, "shared": "param"},
+    )
+
+    assert agent.extra_body["x"] == 1
+    assert agent.extra_body["y"] == 2
+    assert agent.extra_body["shared"] == "param"
+
+    # model settings includes format=json for non-openai base_url
+    assert isinstance(agent.model_settings_json, dict)
+    extra_body = agent.model_settings_json.get("extra_body")
+    assert isinstance(extra_body, dict)
+    assert extra_body["format"] == "json"
+    assert extra_body["x"] == 1
+    assert extra_body["y"] == 2
+    assert extra_body["shared"] == "param"
