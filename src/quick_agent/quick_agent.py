@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Type, TypeAlias, TypedDict
 
-logger = logging.getLogger(__name__)
-
 import httpx
 from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, ValidationError
@@ -41,6 +39,9 @@ from quick_agent.prompting import make_user_prompt
 from quick_agent.single_shot import run_single_shot
 from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
+
+logger = logging.getLogger(__name__)
+
 
 StepOutput: TypeAlias = str | dict[str, Any]
 
@@ -81,7 +82,9 @@ class QuickAgent:
         safe_dir = self.loaded.spec.safe_dir
         if safe_dir is not None and Path(safe_dir).is_absolute():
             raise ValueError("safe_dir must be a relative path.")
-        self.permissions: DirectoryPermissions = self._directory_permissions.scoped(safe_dir)
+        self.permissions: DirectoryPermissions = self._directory_permissions.scoped(
+            safe_dir
+        )
         if isinstance(self._input_data, InputAdaptor):
             input_adaptor = self._input_data
         else:
@@ -108,15 +111,21 @@ class QuickAgent:
         self.extra_body = body
 
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
-        self.model: OpenAIChatModel = build_model(self.model_spec, http_client=self._http_client)
+        self.model: OpenAIChatModel = build_model(
+            self.model_spec, http_client=self._http_client
+        )
         self.state: ChainState = self._init_state()
         self._enable_llm_request_logging: bool = enable_llm_request_logging
         if llm_log_path is None:
             llm_log_path = Path("log/results.log")
         self._llm_log_path: Path = Path(llm_log_path)
-        self.model_settings_json: ModelSettings | None = self._build_model_settings(self.model_spec)
+        self.model_settings_json: ModelSettings | None = self._build_model_settings(
+            self.model_spec
+        )
+        self.last_run_metrics: dict[str, object] | None = None
 
     async def run(self) -> AgentResult:
+        self.last_run_metrics = None
         if self.has_tools():
             if self.toolset is None:
                 raise ValueError("Toolset is missing while tools are enabled.")
@@ -143,7 +152,9 @@ class QuickAgent:
         finally:
             self._write_llm_request_log(None)
 
-    async def _run_nested_agent(self, agent_id: str, input_data: InputAdaptor | Path) -> AgentResult:
+    async def _run_nested_agent(
+        self, agent_id: str, input_data: InputAdaptor | Path
+    ) -> AgentResult:
         nested_write_output = self.loaded.spec.nested_output == "file"
         agent = QuickAgent(
             registry=self._registry,
@@ -202,7 +213,9 @@ class QuickAgent:
         keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
         limits: httpx.Limits = DEFAULT_LIMITS
         if keepalive_expiry_seconds is not None:
-            limits = httpx.Limits(max_connections=100, keepalive_expiry=keepalive_expiry_seconds)
+            limits = httpx.Limits(
+                max_connections=100, keepalive_expiry=keepalive_expiry_seconds
+            )
 
         headers = self.extra_headers if self.extra_headers else None
         event_hooks: dict[str, list[Callable[..., Any]]] | None = None
@@ -212,7 +225,12 @@ class QuickAgent:
                 "response": [self._record_http_response],
             }
 
-        if timeout_seconds is None and limits is None and event_hooks is None and headers is None:
+        if (
+            timeout_seconds is None
+            and limits is None
+            and event_hooks is None
+            and headers is None
+        ):
             return None
 
         return httpx.AsyncClient(
@@ -222,7 +240,9 @@ class QuickAgent:
             event_hooks=event_hooks,
         )
 
-    def _build_structured_model_settings(self, *, schema_cls: Type[BaseModel]) -> ModelSettings | None:
+    def _build_structured_model_settings(
+        self, *, schema_cls: Type[BaseModel]
+    ) -> ModelSettings | None:
         model_settings: ModelSettings | None = self.model_settings_json
         provider = getattr(self.model, "provider", None)
         base_url = getattr(provider, "base_url", None)
@@ -289,6 +309,77 @@ class QuickAgent:
             return [self._json_compatible_value(item) for item in value]
         return str(value)
 
+    def _normalize_usage_metrics(self, usage: object) -> dict[str, object]:
+        usage_dict: dict[str, object] = {}
+        if isinstance(usage, dict):
+            for key, value in usage.items():
+                usage_dict[str(key)] = self._json_compatible_value(value)
+            return usage_dict
+        if isinstance(usage, BaseModel):
+            payload = usage.model_dump(exclude_none=True)
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    usage_dict[str(key)] = self._json_compatible_value(value)
+            return usage_dict
+        model_dump = getattr(usage, "model_dump", None)
+        if callable(model_dump):
+            payload = model_dump(exclude_none=True)
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    usage_dict[str(key)] = self._json_compatible_value(value)
+                return usage_dict
+        return usage_dict
+
+    def _extract_finish_reason(self, response: object | None) -> str | None:
+        if response is None:
+            return None
+        choices = getattr(response, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            return None
+        first_choice = choices[0]
+        finish_reason = getattr(first_choice, "finish_reason", None)
+        if isinstance(finish_reason, str) and finish_reason:
+            return finish_reason
+        return None
+
+    def _capture_metrics(self, *, usage: object, response: object | None) -> None:
+        model = self.model_spec.model_name
+        if response is not None:
+            response_model = getattr(response, "model", None)
+            if isinstance(response_model, str) and response_model:
+                model = response_model
+        metrics: dict[str, object] = {
+            "provider": self.model_spec.provider,
+            "model": model,
+            "usage": self._normalize_usage_metrics(usage),
+        }
+        if response is not None:
+            completion_id = getattr(response, "id", None)
+            if isinstance(completion_id, str) and completion_id:
+                metrics["completion_id"] = completion_id
+            created = getattr(response, "created", None)
+            if isinstance(created, (int, float, str)):
+                metrics["created"] = created
+            system_fingerprint = getattr(response, "system_fingerprint", None)
+            if isinstance(system_fingerprint, str) and system_fingerprint:
+                metrics["system_fingerprint"] = system_fingerprint
+            finish_reason = self._extract_finish_reason(response)
+            if finish_reason is not None:
+                metrics["finish_reason"] = finish_reason
+        self.last_run_metrics = metrics
+
+    def _capture_pydantic_ai_metrics(self, result: object) -> None:
+        usage: object = {}
+        response = getattr(result, "response", None)
+        usage_getter = getattr(result, "usage", None)
+        if callable(usage_getter):
+            usage = usage_getter()
+        self._capture_metrics(usage=usage, response=response)
+
+    def _capture_openai_sdk_metrics(self, response: object) -> None:
+        usage = getattr(response, "usage", {})
+        self._capture_metrics(usage=usage, response=response)
+
     def _record_llm_request(
         self,
         *,
@@ -334,7 +425,11 @@ class QuickAgent:
                 log_file.write(entry)
                 log_file.write("\n\n")
         except OSError:
-            logger.exception("%s: file=%s > Failed to write LLM request log", prefix, self._llm_log_path)
+            logger.exception(
+                "%s: file=%s > Failed to write LLM request log",
+                prefix,
+                self._llm_log_path,
+            )
 
     def _normalize_agent_text(self, text: str) -> str | None:
         if text:
@@ -346,7 +441,9 @@ class QuickAgent:
             return text
         return []
 
-    def _map_model_http_error(self, error: ModelHTTPError) -> QuickAgentException | None:
+    def _map_model_http_error(
+        self, error: ModelHTTPError
+    ) -> QuickAgentException | None:
         body = error.body
         message = ""
         if isinstance(body, dict):
@@ -356,9 +453,13 @@ class QuickAgent:
         elif isinstance(body, str):
             message = body
         if "does not support tools" in message:
-            return QuickAgentToolsNotSupportedException(model_name=error.model_name, message=message)
+            return QuickAgentToolsNotSupportedException(
+                model_name=error.model_name, message=message
+            )
         if "does not support chat" in message:
-            return QuickAgentChatNotSupportedException(model_name=error.model_name, message=message)
+            return QuickAgentChatNotSupportedException(
+                model_name=error.model_name, message=message
+            )
         return None
 
     def _decode_http_bytes(self, value: bytes) -> str:
@@ -443,7 +544,10 @@ class QuickAgent:
                 request_obj = entry.get("request")
                 response_obj = entry.get("response")
                 if isinstance(request_obj, dict):
-                    exchange_context: dict[str, object] = {"request": request_obj, "request_source": "quick_agent_http_traffic_log"}
+                    exchange_context: dict[str, object] = {
+                        "request": request_obj,
+                        "request_source": "quick_agent_http_traffic_log",
+                    }
                     if isinstance(response_obj, dict):
                         exchange_context["response"] = response_obj
                     return exchange_context
@@ -451,7 +555,10 @@ class QuickAgent:
             if entry.get("event") == "request":
                 request_obj = entry.get("request")
                 if isinstance(request_obj, dict):
-                    return {"request": request_obj, "request_source": "quick_agent_http_traffic_log"}
+                    return {
+                        "request": request_obj,
+                        "request_source": "quick_agent_http_traffic_log",
+                    }
         return {}
 
     def _unexpected_model_behavior_request_context(
@@ -500,7 +607,12 @@ class QuickAgent:
             user_prompt=user_prompt,
             model_settings=self.model_settings_json,
         )
-        logger.info("%s: model=%s step=%s > Calling model", prefix, self.model_spec.model_name, step.id)
+        logger.info(
+            "%s: model=%s step=%s > Calling model",
+            prefix,
+            self.model_spec.model_name,
+            step.id,
+        )
         try:
             result = await agent.run(user_prompt)
         except UnexpectedModelBehavior as error:
@@ -508,7 +620,9 @@ class QuickAgent:
                 original_exception=error,
                 request_context=self._unexpected_model_behavior_request_context(
                     instructions=step_instructions,
-                    system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+                    system_prompt=self._normalize_system_prompt(
+                        self.loaded.system_prompt
+                    ),
                     user_prompt=user_prompt,
                     model_settings=self.model_settings_json,
                 ),
@@ -518,6 +632,7 @@ class QuickAgent:
             if mapped_error is not None:
                 raise mapped_error from error
             raise error
+        self._capture_pydantic_ai_metrics(result)
         return result.output
 
     async def _run_single_shot(self) -> BaseModel | str:
@@ -563,7 +678,13 @@ class QuickAgent:
             user_prompt=user_prompt,
             model_settings=model_settings,
         )
-        logger.info("%s: model=%s step=%s schema=%s > Calling model", prefix, self.model_spec.model_name, step.id, step.output_schema)
+        logger.info(
+            "%s: model=%s step=%s schema=%s > Calling model",
+            prefix,
+            self.model_spec.model_name,
+            step.id,
+            step.output_schema,
+        )
         try:
             result = await agent.run(user_prompt)
         except UnexpectedModelBehavior as error:
@@ -571,7 +692,9 @@ class QuickAgent:
                 original_exception=error,
                 request_context=self._unexpected_model_behavior_request_context(
                     instructions=step_instructions,
-                    system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+                    system_prompt=self._normalize_system_prompt(
+                        self.loaded.system_prompt
+                    ),
                     user_prompt=user_prompt,
                     model_settings=model_settings,
                 ),
@@ -581,6 +704,7 @@ class QuickAgent:
             if mapped_error is not None:
                 raise mapped_error from error
             raise error
+        self._capture_pydantic_ai_metrics(result)
         raw_output = result.output
         if isinstance(raw_output, BaseModel):
             parsed = raw_output
@@ -610,9 +734,9 @@ class QuickAgent:
                 self.state["last_step_output"] = step_out
                 last_step_output = step_result
             else:
-              self.state["steps"][step.id] = step_result
-              self.state["last_step_output"] = step_result
-              last_step_output = step_result
+                self.state["steps"][step.id] = step_result
+                self.state["last_step_output"] = step_result
+                last_step_output = step_result
         return last_step_output
 
     def _compiled_output(self, last_step_output: BaseModel | str) -> AgentResult:
@@ -649,7 +773,9 @@ class QuickAgent:
         schema_cls = resolve_schema(self.loaded, compiled_schema)
 
         if not hasattr(schema_cls, "model_fields"):
-            raise RuntimeError("Compiled structured output requires a Pydantic model with `model_fields`.")
+            raise RuntimeError(
+                "Compiled structured output requires a Pydantic model with `model_fields`."
+            )
         fields = set(schema_cls.model_fields.keys())
 
         payload: dict[str, object] = {}
@@ -670,7 +796,9 @@ class QuickAgent:
     def _build_tool_ids(self) -> list[str]:
         if not self.loaded.spec.tools:
             return []
-        return list(dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or [])))
+        return list(
+            dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or []))
+        )
 
     def _build_toolset(self) -> FunctionToolset[Any] | None:
         if not self.has_tools():
@@ -705,7 +833,9 @@ class QuickAgent:
                 payload = last_step_output.model_dump_json(indent=2)
             else:
                 payload = str(last_step_output)
-            await self._run_nested_agent(self.loaded.spec.handoff.agent_id, TextInput(payload))
+            await self._run_nested_agent(
+                self.loaded.spec.handoff.agent_id, TextInput(payload)
+            )
 
 
 def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]:
@@ -713,14 +843,20 @@ def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]
         raise KeyError(f"Schema {schema_name!r} not registered in agent.md schemas.")
     cls = import_symbol(loaded.spec.schemas[schema_name])
     if not isinstance(cls, type) or not issubclass(cls, BaseModel):
-        raise TypeError(f"Schema {schema_name!r} must be a Pydantic BaseModel subclass.")
+        raise TypeError(
+            f"Schema {schema_name!r} must be a Pydantic BaseModel subclass."
+        )
     return cls
 
 
-def build_model(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+def build_model(
+    model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None
+) -> OpenAIChatModel:
     api_key = os.environ.get(model_spec.api_key_env, "noop")
     if http_client is None:
         provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key)
     else:
-        provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key, http_client=http_client)
+        provider = OpenAIProvider(
+            base_url=model_spec.base_url, api_key=api_key, http_client=http_client
+        )
     return OpenAIChatModel(model_spec.model_name, provider=provider)
