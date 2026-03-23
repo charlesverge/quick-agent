@@ -27,6 +27,8 @@ from quick_agent.models import AgentSpec
 from quick_agent.models import ChainStepSpec
 from quick_agent.models import LoadedAgentFile
 from quick_agent.models import ModelSpec
+from quick_agent.models.content_processing_spec import ContentProcessingSpec
+from quick_agent.models.content_processing_spec import SampleSpec
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
@@ -1216,6 +1218,74 @@ async def test_run_returns_compiled_output_with_missing_step_keys() -> None:
     output = await qa.run()
 
     assert output == {"s1": "one", "s2": "two", "last_step_output": "two"}
+
+
+def test_apply_sample_processing_updates_input_text() -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    loaded.spec.content_processing = ContentProcessingSpec(
+        sample=SampleSpec(ratios=(100, 0, 0), max_chunk_tokens=3)
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    qa._apply_sample_processing()
+
+    assert qa.run_input.text == "one two three"
+
+
+def test_apply_sample_processing_keeps_text_when_not_configured() -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    qa._apply_sample_processing()
+
+    assert qa.run_input.text == "one two three four five six"
+
+
+def test_apply_sample_processing_writes_debug_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    loaded.spec.content_processing = ContentProcessingSpec(
+        sample=SampleSpec(
+            ratios=(100, 0, 0),
+            max_chunk_tokens=3,
+            debug_output_file="out/sample_debug.txt",
+        )
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six",
+        data=None,
+    )
+    write_output_recorder = SyncCallRecorder(return_value=None)
+    monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    qa._apply_sample_processing()
+
+    assert len(write_output_recorder.calls) == 1
+    args = write_output_recorder.calls[0][0]
+    assert args[0] == Path("out/sample_debug.txt")
+    assert args[1] == "one two three"
 
 
 @pytest.mark.anyio

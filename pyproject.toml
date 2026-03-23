@@ -16,6 +16,7 @@ dependencies = [
   "python-frontmatter>=1.1.0",
   "types-PyYAML",
   "PyYAML>=6.0.3",
+  "tiktoken>=0.12.0",
 ]
 keywords = ["agents", "llm", "automation", "pydantic", "markdown", "orchestrator"]
 classifiers = [

@@ -37,6 +37,7 @@ from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
 from quick_agent.single_shot import run_single_shot
+from quick_agent.samplers.simple_ratios import SampleRatios
 from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
 
@@ -135,6 +136,7 @@ class QuickAgent:
                 self.run_input.source_path,
                 self._run_nested_agent,
             )
+        self._apply_sample_processing()
 
         try:
             last_step_output = await self._run_chain()
@@ -151,6 +153,18 @@ class QuickAgent:
             return output
         finally:
             self._write_llm_request_log(None)
+
+    def _apply_sample_processing(self) -> None:
+        content_processing = self.loaded.spec.content_processing
+        if content_processing is None or content_processing.sample is None:
+            return
+        sample_result = SampleRatios().run(
+            self.run_input.text, content_processing.sample
+        )
+        self.run_input = self.run_input.model_copy(update={"text": sample_result})
+        debug_output_file = content_processing.sample.debug_output_file
+        if debug_output_file:
+            write_output(Path(debug_output_file), sample_result, self.permissions)
 
     async def _run_nested_agent(
         self, agent_id: str, input_data: InputAdaptor | Path
