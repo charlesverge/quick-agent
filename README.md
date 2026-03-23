@@ -1,6 +1,9 @@
 # Quick Agent
 
-Quick Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter and executes a small chain of steps with limited context handling. It is intentionally small and explicit: you define the model, tools, and steps in a single Markdown file, and the orchestrator runs those steps in order with a bounded prompt preamble.
+Quick Agent is a minimal, local-first agent runner that loads agent definitions from Markdown front matter
+and executes a small chain of steps with limited context handling. It is intentionally small and explicit:
+you define the model, tools, and steps in a single Markdown file, and the orchestrator runs those steps in
+order with a bounded prompt preamble.
 
 ## Project Goal
 
@@ -217,6 +220,8 @@ Use `nested_output: file` to allow nested agents to write their configured outpu
 See the docs in `docs/`:
 
 - [docs/cli.md](docs/cli.md): Command line usage and options.
+- [docs/sample.md](docs/sample.md): Sample content-processing configuration and example usage.
+- [docs/advanced.md](docs/advanced.md): Advanced Python API settings (`extra_headers` and `extra_body`).
 - [docs/templates.md](docs/templates.md): Agent template format and examples.
 - [docs/outputs.md](docs/outputs.md): Output configuration and behavior.
 - [docs/python.md](docs/python.md): Embedding the orchestrator in scripts.
