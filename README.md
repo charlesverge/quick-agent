@@ -221,6 +221,7 @@ See the docs in `docs/`:
 
 - [docs/cli.md](docs/cli.md): Command line usage and options.
 - [docs/sample.md](docs/sample.md): Sample content-processing configuration and example usage.
+- [docs/chunking.md](docs/chunking.md): Chunk-processing modes, provider examples, and output contract.
 - [docs/advanced.md](docs/advanced.md): Advanced Python API settings (`extra_headers` and `extra_body`).
 - [docs/templates.md](docs/templates.md): Agent template format and examples.
 - [docs/outputs.md](docs/outputs.md): Output configuration and behavior.

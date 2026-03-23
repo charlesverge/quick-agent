@@ -28,6 +28,7 @@ from quick_agent.models import ChainStepSpec
 from quick_agent.models import LoadedAgentFile
 from quick_agent.models import ModelSpec
 from quick_agent.models.content_processing_spec import ContentProcessingSpec
+from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.content_processing_spec import SampleSpec
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.output_spec import OutputSpec
@@ -1289,6 +1290,173 @@ def test_apply_sample_processing_writes_debug_output(
 
 
 @pytest.mark.anyio
+async def test_run_returns_sample_output_without_llm_for_empty_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        output=OutputSpec(file=None),
+        content_processing=ContentProcessingSpec(
+            sample=SampleSpec(ratios=(100, 0, 0), max_chunk_tokens=3)
+        ),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    run_chain_recorder = AsyncCallRecorder(return_value="unexpected")
+    monkeypatch.setattr(qa, "_run_chain", run_chain_recorder)
+
+    output = await qa.run()
+
+    assert output == "one two three"
+    assert len(run_chain_recorder.calls) == 0
+
+
+@pytest.mark.anyio
+async def test_apply_chunk_processing_runs_chain_per_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    loaded.spec.content_processing = ContentProcessingSpec(
+        chunk_processing=ChunkProcessingSpec(
+            mode="map_chunks",
+            provider="semchunks",
+            max_chunk_tokens=3,
+            overlap_percent=0,
+        )
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six seven eight",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    run_chunk_agent_recorder = AsyncCallRecorder(return_value="processed")
+    monkeypatch.setattr(qa, "_run_chunk_agent", run_chunk_agent_recorder)
+
+    result = await qa._apply_chunk_processing()
+
+    assert result is not None
+    assert "items" in result
+    items = result["items"]
+    assert isinstance(items, list)
+    assert len(items) >= 2
+    assert all(entry == "processed" for entry in items)
+    assert len(run_chunk_agent_recorder.calls) == len(items)
+
+
+@pytest.mark.anyio
+async def test_run_returns_chunk_text_items_without_llm_for_empty_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        output=OutputSpec(file=None),
+        content_processing=ContentProcessingSpec(
+            chunk_processing=ChunkProcessingSpec(
+                mode="map_chunks",
+                provider="semchunks",
+                max_chunk_tokens=3,
+                overlap_percent=0,
+            )
+        ),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six seven eight",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    run_chunk_agent_recorder = AsyncCallRecorder(return_value="processed")
+    monkeypatch.setattr(qa, "_run_chunk_agent", run_chunk_agent_recorder)
+
+    output = await qa.run()
+
+    assert isinstance(output, dict)
+    assert "items" in output
+    items = output["items"]
+    assert isinstance(items, list)
+    assert len(items) >= 2
+    assert all(isinstance(entry, str) for entry in items)
+    assert len(run_chunk_agent_recorder.calls) == 0
+
+
+@pytest.mark.anyio
+async def test_run_returns_chunk_output_when_chunk_processing_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    loaded.spec.content_processing = ContentProcessingSpec(
+        chunk_processing=ChunkProcessingSpec(
+            mode="map_paragraphs",
+            provider="semchunks",
+            max_chunk_tokens=8,
+            overlap_percent=0,
+        )
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="p1 one two three.\n\np2 four five six.\n\np3 seven eight nine.",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+    run_chunk_agent_recorder = AsyncCallRecorder(return_value="processed")
+    monkeypatch.setattr(qa, "_run_chunk_agent", run_chunk_agent_recorder)
+
+    output = await qa.run()
+
+    assert isinstance(output, dict)
+    assert list(output.keys()) == ["items"]
+    items = output["items"]
+    assert isinstance(items, list)
+    assert len(items) >= 1
+    assert all(entry == "processed" for entry in items)
+    assert len(run_chunk_agent_recorder.calls) == len(items)
+
+
+def test_run_chunk_processing_raises_for_invalid_provider() -> None:
+    qa = _make_quick_agent_for_test()
+    map_config = ChunkProcessingSpec.model_construct(
+        mode="map_chunks",
+        provider="invalid",
+        max_chunk_tokens=4,
+        overlap_percent=0,
+        overlap_token=None,
+    )
+
+    with pytest.raises(ValueError, match="chunk_processing.provider"):
+        qa._run_chunk_processing("one two three four", map_config)
+
+
+@pytest.mark.anyio
 async def test_run_chain_single_shot_system_prompt_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1935,6 +2103,19 @@ async def test_handle_handoff_runs_followup() -> None:
     run_input = input_data.load()
     assert run_input.kind == "text"
     assert run_input.text == "hello"
+
+
+@pytest.mark.anyio
+async def test_handle_handoff_returns_followup_output() -> None:
+    handoff = HandoffSpec(enabled=True, agent_id="next")
+    step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
+    loaded = _make_loaded_with_chain([step], handoff=handoff)
+
+    qa = HandoffQuickAgent()
+    qa.loaded = loaded
+    output = await qa._handle_handoff("hello")
+
+    assert output == "ok"
 
 
 @pytest.mark.anyio

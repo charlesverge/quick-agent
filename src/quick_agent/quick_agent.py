@@ -31,7 +31,10 @@ from quick_agent.exceptions import (
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
 from quick_agent.json_utils import extract_first_json_object
+from quick_agent.mapping.map_chunks import MapChunks
+from quick_agent.mapping.map_paragraphs import MapParagraphs
 from quick_agent.models.chain_step_spec import ChainStepSpec
+from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
@@ -137,20 +140,38 @@ class QuickAgent:
                 self._run_nested_agent,
             )
         self._apply_sample_processing()
+        chunk_output = await self._apply_chunk_processing()
+        if chunk_output is not None:
+            if self._write_output_file:
+                self._write_last_step_output(chunk_output)
+            handoff_output = await self._handle_handoff(chunk_output)
+            if handoff_output is not None:
+                return handoff_output
+            return chunk_output
+        if self._is_empty_agent_body():
+            output: AgentResult = self.run_input.text
+            if self._write_output_file:
+                self._write_last_step_output(output)
+            handoff_output = await self._handle_handoff(output)
+            if handoff_output is not None:
+                return handoff_output
+            return output
 
         try:
             last_step_output = await self._run_chain()
 
-            output: AgentResult = last_step_output
+            final_output: AgentResult = last_step_output
             if self.loaded.spec.output.return_compiled_output:
-                output = self._compiled_output(last_step_output)
+                final_output = self._compiled_output(last_step_output)
 
             if self._write_output_file:
-                self._write_last_step_output(output)
+                self._write_last_step_output(final_output)
 
-            await self._handle_handoff(last_step_output)
+            handoff_output = await self._handle_handoff(last_step_output)
+            if handoff_output is not None:
+                return handoff_output
 
-            return output
+            return final_output
         finally:
             self._write_llm_request_log(None)
 
@@ -165,6 +186,83 @@ class QuickAgent:
         debug_output_file = content_processing.sample.debug_output_file
         if debug_output_file:
             write_output(Path(debug_output_file), sample_result, self.permissions)
+
+    async def _apply_chunk_processing(self) -> dict[str, object] | None:
+        content_processing = self.loaded.spec.content_processing
+        if content_processing is None or content_processing.chunk_processing is None:
+            return None
+        map_config = content_processing.chunk_processing
+        chunk_texts = self._run_chunk_processing(self.run_input.text, map_config)
+        if self._is_empty_agent_body():
+            return {"items": chunk_texts}
+        items: list[object] = []
+        index = 0
+        while index < len(chunk_texts):
+            chunk_text = chunk_texts[index]
+            chunk_output = await self._run_chunk_agent(chunk_text)
+            if isinstance(chunk_output, BaseModel):
+                items.append(chunk_output.model_dump())
+            else:
+                items.append(chunk_output)
+            index += 1
+        return {"items": items}
+
+    async def _run_chunk_agent(self, chunk_text: str) -> AgentResult:
+        chunk_agent = QuickAgent(
+            registry=self._registry,
+            tools=self._tools,
+            directory_permissions=self._directory_permissions,
+            agent_id=self._agent_id,
+            input_data=TextInput(chunk_text),
+            extra_tools=self._extra_tools,
+            model=self.model_spec,
+            write_output=False,
+            record_http_traffic=self._record_http_traffic,
+            enable_llm_request_logging=self._enable_llm_request_logging,
+            llm_log_path=self._llm_log_path,
+            extra_headers=self.extra_headers,
+            extra_body=self.extra_body,
+        )
+        if chunk_agent.has_tools():
+            if chunk_agent.toolset is None:
+                raise ValueError("Toolset is missing while tools are enabled.")
+            chunk_agent._tools.maybe_inject_agent_call(
+                chunk_agent.tool_ids,
+                chunk_agent.toolset,
+                chunk_agent.run_input.source_path,
+                chunk_agent._run_nested_agent,
+            )
+        last_step_output = await chunk_agent._run_chain()
+        if chunk_agent.loaded.spec.output.return_compiled_output:
+            return chunk_agent._compiled_output(last_step_output)
+        return last_step_output
+
+    def _run_chunk_processing(
+        self, text: str, map_config: ChunkProcessingSpec
+    ) -> list[str]:
+        if map_config.provider != "semchunks":
+            raise ValueError("chunk_processing.provider must be 'semchunks'.")
+        if map_config.mode == "map_chunks":
+            return MapChunks().run(text, map_config)
+        if map_config.mode == "map_paragraphs":
+            return MapParagraphs().run(text, map_config)
+        raise ValueError(
+            "chunk_processing.mode must be 'map_chunks' or 'map_paragraphs'."
+        )
+
+    def _is_empty_agent_body(self) -> bool:
+        if self.loaded.spec.chain:
+            return False
+        if self.loaded.instructions.strip():
+            return False
+        if isinstance(self.loaded.system_prompt, list):
+            index = 0
+            while index < len(self.loaded.system_prompt):
+                if self.loaded.system_prompt[index].strip():
+                    return False
+                index += 1
+            return True
+        return not self.loaded.system_prompt.strip()
 
     async def _run_nested_agent(
         self, agent_id: str, input_data: InputAdaptor | Path
@@ -841,15 +939,20 @@ class QuickAgent:
         write_output(out_path, text, self.permissions)
         return out_path
 
-    async def _handle_handoff(self, last_step_output: BaseModel | str) -> None:
+    async def _handle_handoff(
+        self, last_step_output: AgentResult
+    ) -> AgentResult | None:
         if self.loaded.spec.handoff.enabled and self.loaded.spec.handoff.agent_id:
             if isinstance(last_step_output, BaseModel):
                 payload = last_step_output.model_dump_json(indent=2)
+            elif isinstance(last_step_output, dict):
+                payload = json.dumps(last_step_output, indent=2)
             else:
                 payload = str(last_step_output)
-            await self._run_nested_agent(
+            return await self._run_nested_agent(
                 self.loaded.spec.handoff.agent_id, TextInput(payload)
             )
+        return None
 
 
 def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]:

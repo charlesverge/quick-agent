@@ -113,4 +113,67 @@ agent = QuickAgent(
 )
 ```
 
+## Empty agent body for preprocessing-only runs
+
+An agent is treated as an empty body when all of these are true:
+
+- `chain` is empty
+- `instructions` is empty
+- `system_prompt` is empty
+
+In this mode, QuickAgent does not call the LLM. The returned output is only the
+result of content preprocessing.
+
+### Sample only
+
+```markdown
+---
+name: "Sample only"
+content_processing:
+  sample:
+    ratios: [25, 50, 25]
+    max_chunk_tokens: 2000
+chain: []
+---
+```
+
+Result: returns sampled text as the final output.
+
+### Chunk only
+
+```markdown
+---
+name: "Chunk only"
+content_processing:
+  chunk_processing:
+    mode: map_chunks
+    provider: semchunks
+    max_chunk_tokens: 1200
+    overlap_percent: 10
+chain: []
+---
+```
+
+Result: returns `{"items": [...]}` where each item is chunk text.
+
+### Sample then chunk
+
+```markdown
+---
+name: "Sample then chunk"
+content_processing:
+  sample:
+    ratios: [25, 50, 25]
+    max_chunk_tokens: 4000
+  chunk_processing:
+    mode: map_paragraphs
+    provider: semchunks
+    max_chunk_tokens: 1200
+    overlap_percent: 10
+chain: []
+---
+```
+
+Result: sample is applied first, then chunking, and output is `{"items": [...]}`.
+
 ````
