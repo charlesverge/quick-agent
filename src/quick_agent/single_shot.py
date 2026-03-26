@@ -76,9 +76,9 @@ def _parse_structured_result(
 ) -> BaseModel:
     if isinstance(raw_output, BaseModel):
         return raw_output
-    if isinstance(raw_output, dict):
-        return schema_cls.model_validate(raw_output)
     try:
+        if isinstance(raw_output, dict):
+            return schema_cls.model_validate(raw_output)
         return schema_cls.model_validate_json(raw_output)
     except ValidationError:
         extracted = extract_first_json_object(raw_output)
@@ -104,7 +104,7 @@ async def _run_single_shot_text_via_pydantic_ai(
     )
     try:
         result = await runner.run(user_prompt)
-    except UnexpectedModelBehavior as error:
+    except (UnexpectedModelBehavior, ValidationError) as error:
         raise QuickAgentUnexpectedModelBehaviorException(
             original_exception=error,
             request_context=agent._unexpected_model_behavior_request_context(
@@ -143,7 +143,7 @@ async def _run_single_shot_structured_via_pydantic_ai(
     )
     try:
         result = await runner.run(user_prompt)
-    except UnexpectedModelBehavior as error:
+    except (UnexpectedModelBehavior, ValidationError) as error:
         raise QuickAgentUnexpectedModelBehaviorException(
             original_exception=error,
             request_context=agent._unexpected_model_behavior_request_context(
@@ -224,10 +224,10 @@ async def _run_single_shot_structured_via_openai_sdk(
     if response is None or not response.choices:
         raise ValueError("Model returned no completion choices.")
     message_obj = response.choices[0].message
-    content_obj = getattr(message_obj, "content", None)
-    if not isinstance(content_obj, str) or not content_obj.strip():
-        refusal_obj = getattr(message_obj, "refusal", None)
-        if isinstance(refusal_obj, str) and refusal_obj:
+    content_obj = message_obj.content
+    if not content_obj or not content_obj.strip():
+        refusal_obj = message_obj.refusal
+        if refusal_obj:
             raise ValueError(f"Model refused structured response: {refusal_obj}")
         raise ValueError("Model returned an empty structured response.")
     return _parse_structured_result(content_obj, schema_cls)

@@ -727,7 +727,7 @@ class QuickAgent:
         )
         try:
             result = await agent.run(user_prompt)
-        except UnexpectedModelBehavior as error:
+        except (UnexpectedModelBehavior, ValidationError) as error:
             raise QuickAgentUnexpectedModelBehaviorException(
                 original_exception=error,
                 request_context=self._unexpected_model_behavior_request_context(

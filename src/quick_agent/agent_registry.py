@@ -5,6 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from quick_agent.models.loaded_agent_file import LoadedAgentFile, parse_agent_sections
+from yaml.parser import ParserError
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def split_step_sections(markdown_body: str) -> dict[str, str]:
@@ -44,12 +48,20 @@ class AgentRegistry:
         return sorted(index.keys())
 
     def get(self, agent_id: str) -> LoadedAgentFile:
+        prefix = "AgentRegistry.get"
         if agent_id in self._cache:
             return self._cache[agent_id]
         index = self._get_index()
         path = index.get(agent_id)
         if path is None:
-            raise FileNotFoundError(f"Agent not found: {agent_id} (searched: {self.agent_roots})")
-        loaded = LoadedAgentFile(path)
+            raise FileNotFoundError(
+                f"Agent not found: {agent_id} (searched: {self.agent_roots})"
+            )
+        try:
+            loaded = LoadedAgentFile(path)
+        except ParserError as e:
+            logger.error(f"{prefix}: Error parsing agent file {path}: {e}")
+            raise ValueError(f"{prefix}: Error parsing agent file {path}: {e}") from e
+
         self._cache[agent_id] = loaded
         return loaded
