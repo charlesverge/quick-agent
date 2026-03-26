@@ -36,7 +36,7 @@ from quick_agent.models.run_input import RunInput
 from quick_agent.orchestrator import Orchestrator
 from quick_agent.exceptions import QuickAgentChatNotSupportedException
 from quick_agent.exceptions import QuickAgentToolsNotSupportedException
-from quick_agent.exceptions import QuickAgentUnexpectedModelBehaviorException
+from quick_agent.quick_agent import ExecutionLogEntry
 from quick_agent.quick_agent import QuickAgent
 from quick_agent.quick_agent import build_model
 from quick_agent.quick_agent import resolve_schema
@@ -44,7 +44,13 @@ from quick_agent.prompting import make_user_prompt
 
 
 class DummyProvider:
-    def __init__(self, base_url: str, api_key: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        http_client: httpx.AsyncClient | None = None,
+        openai_client: object | None = None,
+    ) -> None:
         self.base_url = base_url
         self.api_key = api_key
 
@@ -1888,7 +1894,7 @@ async def test_run_single_shot_structured_uses_pydantic_ai_when_flag_enabled(
 
 
 @pytest.mark.anyio
-async def test_run_text_step_wraps_unexpected_model_behavior_with_request_context(
+async def test_run_text_step_propagates_unexpected_model_behavior_with_request_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(qa_module, "Agent", FakeAgent)
@@ -1921,13 +1927,17 @@ async def test_run_text_step_wraps_unexpected_model_behavior_with_request_contex
     qa.tool_ids = []
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
-    with pytest.raises(QuickAgentUnexpectedModelBehaviorException) as raised:
+    with pytest.raises(UnexpectedModelBehavior) as raised:
         await qa._run_text_step(step=step)
-    assert (
-        raised.value.details["unexpected_model_behavior_body"]
-        == '{\n  "error": "internal"\n}'
-    )
-    request_details = raised.value.details["request"]
+    assert raised.value is unexpected_error
+    cause_obj = raised.value.__cause__
+    assert isinstance(cause_obj, httpx.HTTPStatusError)
+    request_details = {
+        "method": cause_obj.request.method,
+        "url": str(cause_obj.request.url),
+        "headers": dict(cause_obj.request.headers),
+        "body": cause_obj.request.content.decode("utf-8"),
+    }
     assert request_details == {
         "method": "POST",
         "url": "http://localhost:11434/v1/chat/completions",
@@ -1938,7 +1948,11 @@ async def test_run_text_step_wraps_unexpected_model_behavior_with_request_contex
         },
         "body": '{"messages":[{"role":"user","content":"hello"}]}',
     }
-    response_details = raised.value.details["response"]
+    response_details = {
+        "status_code": cause_obj.response.status_code,
+        "headers": dict(cause_obj.response.headers),
+        "body": cause_obj.response.content.decode("utf-8"),
+    }
     assert response_details == {
         "status_code": 500,
         "headers": {
@@ -1947,22 +1961,18 @@ async def test_run_text_step_wraps_unexpected_model_behavior_with_request_contex
         },
         "body": '{"error":"internal"}',
     }
-    curl_command = raised.value.to_curl()
+    assert qa.execution_log
+    assert qa.execution_log[-1].call_site == "run_text_step"
+    curl_command = qa.execution_log[-1].to_curl()
     assert "curl -X POST" in curl_command
-    assert "-H 'x-test-header: abc'" in curl_command
-    assert (
-        '--data-raw \'{"messages":[{"role":"user","content":"hello"}]}\''
-        in curl_command
-    )
-    assert "http://localhost:11434/v1/chat/completions" in curl_command
+    assert "-H 'Content-Type: application/json'" in curl_command
+    assert '"model": "m"' in curl_command
+    assert "http://x/chat/completions" in curl_command
 
 
-def test_unexpected_model_behavior_to_curl_reconstructs_when_request_missing() -> None:
-    unexpected_error = UnexpectedModelBehavior(
-        "Exceeded maximum retries (1) for output validation"
-    )
-    exc = QuickAgentUnexpectedModelBehaviorException(
-        original_exception=unexpected_error,
+def test_execution_log_entry_to_curl_reconstructs_when_request_missing() -> None:
+    entry = ExecutionLogEntry(
+        call_site="test",
         request_context={
             "base_url": "http://localhost:11434/v1",
             "model_name": "llama3",
@@ -1972,12 +1982,31 @@ def test_unexpected_model_behavior_to_curl_reconstructs_when_request_missing() -
             "model_settings": {"extra_body": {"format": "json"}},
         },
     )
-    curl_command = exc.to_curl()
+    curl_command = entry.to_curl()
     assert "curl -X POST" in curl_command
     assert "http://localhost:11434/v1/chat/completions" in curl_command
     assert "-H 'Content-Type: application/json'" in curl_command
     assert '"model": "llama3"' in curl_command
     assert '"format": "json"' in curl_command
+
+
+def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
+    qa = _make_quick_agent_for_test()
+    qa.model_spec = ModelSpec(base_url="http://localhost:11434", model_name="m")
+    qa._record_llm_request(
+        call_site="run_single_shot",
+        step_id=None,
+        step_kind="single_shot",
+        output_schema=None,
+        instructions="Use tools if needed.",
+        system_prompt="You are concise.",
+        user_prompt="Summarize this file.",
+        model_settings=ModelSettings(extra_body={"format": "json"}),
+    )
+    assert qa.execution_log
+    curl_command = qa.execution_log[-1].to_curl()
+    assert "http://localhost:11434/chat/completions" in curl_command
+    assert "http://localhost:11434/v1/chat/completions" not in curl_command
 
 
 @pytest.mark.anyio
@@ -2010,17 +2039,12 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
             },
         }
     ]
-    with pytest.raises(QuickAgentUnexpectedModelBehaviorException) as raised:
+    with pytest.raises(UnexpectedModelBehavior) as raised:
         await qa._run_text_step(step=step)
-    assert raised.value.details["request_source"] == "quick_agent_http_traffic_log"
-    request_details = raised.value.details["request"]
-    assert request_details == {
-        "method": "POST",
-        "url": "http://from-log/v1/chat/completions",
-        "headers": {"Content-Type": "application/json"},
-        "body": '{"test":1}',
-    }
-    curl_command = raised.value.to_curl()
+    assert raised.value.message == "Exceeded maximum retries (1) for output validation"
+    assert qa.execution_log
+    assert qa.execution_log[-1].call_site == "run_text_step"
+    curl_command = qa.execution_log[-1].to_curl()
     assert "http://from-log/v1/chat/completions" in curl_command
 
 

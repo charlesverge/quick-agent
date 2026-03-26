@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import openai
 
 from quick_agent.types import AgentResult
 
@@ -24,7 +25,9 @@ class Orchestrator:
     ) -> None:
         self.registry: AgentRegistry = AgentRegistry(agent_roots or [])
         self.tools: AgentTools = AgentTools(tool_roots or [])
-        self.directory_permissions: DirectoryPermissions = DirectoryPermissions(safe_dir)
+        self.directory_permissions: DirectoryPermissions = DirectoryPermissions(
+            safe_dir
+        )
 
     async def run(
         self,
@@ -34,6 +37,7 @@ class Orchestrator:
         record_http_traffic: bool = False,
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
+        client: openai.AsyncOpenAI | None = None,
     ) -> AgentResult:
         agent = QuickAgent(
             registry=self.registry,
@@ -45,5 +49,6 @@ class Orchestrator:
             record_http_traffic=record_http_traffic,
             enable_llm_request_logging=enable_llm_request_logging,
             llm_log_path=llm_log_path,
+            client=client,
         )
         return await agent.run()

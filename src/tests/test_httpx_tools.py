@@ -53,7 +53,13 @@ class BuildModelStub:
     def __init__(self, model: OpenAIChatModel) -> None:
         self.model = model
 
-    def __call__(self, _: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
+    def __call__(
+        self,
+        _: ModelSpec,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        client: object | None = None,
+    ) -> OpenAIChatModel:
         return self.model
 
 
@@ -74,7 +80,9 @@ def _chat_completion_response(model_name: str) -> dict[str, Any]:
     }
 
 
-def _messages_by_role(messages: list[dict[str, Any]], role: str) -> list[dict[str, Any]]:
+def _messages_by_role(
+    messages: list[dict[str, Any]], role: str
+) -> list[dict[str, Any]]:
     return [message for message in messages if message.get("role") == role]
 
 
@@ -86,15 +94,21 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://example.test/v1"
+    ) as client:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=client
+        )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+            model=ModelSpec(
+                base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+            ),
             chain=[step],
             tools=[],
             output=OutputSpec(file=None),
@@ -137,15 +151,21 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://example.test/v1"
+    ) as client:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=client
+        )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+            model=ModelSpec(
+                base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+            ),
             chain=[step],
             tools=["dummy.tool"],
             output=OutputSpec(file=None),
@@ -160,7 +180,9 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
         registry = StaticRegistry(loaded)
         tools = AgentTools([])
         toolset = FunctionToolset[Any]()
-        toolset.add_function(func=dummy_tool, name="dummy_tool", description="dummy tool")
+        toolset.add_function(
+            func=dummy_tool, name="dummy_tool", description="dummy tool"
+        )
         monkeypatch.setattr(tools, "build_toolset", lambda *_: toolset)
         permissions = DirectoryPermissions(tmp_path)
 
@@ -193,14 +215,20 @@ async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://example.test/v1"
+    ) as client:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=client
+        )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+            model=ModelSpec(
+                base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+            ),
             chain=[],
             tools=[],
             output=OutputSpec(file=None),
@@ -249,14 +277,20 @@ async def test_single_shot_no_steps_instructions_only_includes_instructions(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    async with httpx.AsyncClient(transport=transport, base_url="https://example.test/v1") as client:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=client)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://example.test/v1"
+    ) as client:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=client
+        )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(qa_module, "build_model", BuildModelStub(model))
 
         spec = AgentSpec(
             name="test",
-            model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+            model=ModelSpec(
+                base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+            ),
             chain=[],
             tools=[],
             output=OutputSpec(file=None),
@@ -306,8 +340,15 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+    def build_model_stub(
+        model_spec: ModelSpec,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        client: object | None = None,
+    ) -> OpenAIChatModel:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=http_client
+        )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
     monkeypatch.setattr(qa_module, "build_model", build_model_stub)
@@ -315,11 +356,15 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
 
-    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+    monkeypatch.setattr(
+        qa_module.QuickAgent, "_build_http_client", build_http_client_stub
+    )
 
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        model=ModelSpec(
+            base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+        ),
         chain=[],
         tools=[],
         output=OutputSpec(file=None),
@@ -365,8 +410,15 @@ async def test_connection_close_header_included_in_httpx_request(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+    def build_model_stub(
+        model_spec: ModelSpec,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        client: object | None = None,
+    ) -> OpenAIChatModel:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=http_client
+        )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
     monkeypatch.setattr(qa_module, "build_model", build_model_stub)
@@ -374,11 +426,15 @@ async def test_connection_close_header_included_in_httpx_request(
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
 
-    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+    monkeypatch.setattr(
+        qa_module.QuickAgent, "_build_http_client", build_http_client_stub
+    )
 
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        model=ModelSpec(
+            base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+        ),
         chain=[],
         tools=[],
         output=OutputSpec(file=None),
@@ -423,8 +479,15 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+    def build_model_stub(
+        model_spec: ModelSpec,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        client: object | None = None,
+    ) -> OpenAIChatModel:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=http_client
+        )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
     monkeypatch.setattr(qa_module, "build_model", build_model_stub)
@@ -432,12 +495,16 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
 
-    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+    monkeypatch.setattr(
+        qa_module.QuickAgent, "_build_http_client", build_http_client_stub
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME),
+        model=ModelSpec(
+            base_url="https://example.test/v1", model_name=DEFAULT_MODEL_NAME
+        ),
         chain=[step],
         tools=[],
         output=OutputSpec(file=None),
@@ -482,8 +549,15 @@ async def test_extra_headers_merge_model_spec_and_param(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
-    def build_model_stub(model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None) -> OpenAIChatModel:
-        provider = OpenAIProvider(base_url="https://example.test/v1", api_key="test", http_client=http_client)
+    def build_model_stub(
+        model_spec: ModelSpec,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        client: object | None = None,
+    ) -> OpenAIChatModel:
+        provider = OpenAIProvider(
+            base_url="https://example.test/v1", api_key="test", http_client=http_client
+        )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
     monkeypatch.setattr(qa_module, "build_model", build_model_stub)
@@ -491,7 +565,9 @@ async def test_extra_headers_merge_model_spec_and_param(
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
 
-    monkeypatch.setattr(qa_module.QuickAgent, "_build_http_client", build_http_client_stub)
+    monkeypatch.setattr(
+        qa_module.QuickAgent, "_build_http_client", build_http_client_stub
+    )
 
     spec = AgentSpec(
         name="test",

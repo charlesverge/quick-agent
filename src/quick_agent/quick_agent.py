@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Type, TypeAlias, TypedDict
 
 import httpx
+import openai
 from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -26,7 +28,6 @@ from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
     QuickAgentException,
     QuickAgentToolsNotSupportedException,
-    QuickAgentUnexpectedModelBehaviorException,
 )
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
@@ -56,6 +57,87 @@ class ChainState(TypedDict):
     last_step_output: StepOutput | None
 
 
+class ExecutionLogEntry:
+    def __init__(self, *, request_context: dict[str, object], call_site: str) -> None:
+        self.request_context = request_context
+        self.call_site = call_site
+
+    def _request_from_context(self) -> dict[str, object] | None:
+        request_obj = self.request_context.get("request")
+        if isinstance(request_obj, dict):
+            return request_obj
+        return None
+
+    def _reconstructed_request_from_context(self) -> dict[str, object] | None:
+        base_url_obj = self.request_context.get("base_url")
+        model_name_obj = self.request_context.get("model_name")
+        user_prompt_obj = self.request_context.get("user_prompt")
+        system_prompt_obj = self.request_context.get("system_prompt")
+        instructions_obj = self.request_context.get("instructions")
+        model_settings_obj = self.request_context.get("model_settings")
+        if (
+            not isinstance(base_url_obj, str)
+            or not isinstance(model_name_obj, str)
+            or not isinstance(user_prompt_obj, str)
+        ):
+            return None
+        messages: list[dict[str, str]] = []
+        system_parts: list[str] = []
+        if isinstance(system_prompt_obj, str) and system_prompt_obj:
+            system_parts.append(system_prompt_obj)
+        elif isinstance(system_prompt_obj, list):
+            for item in system_prompt_obj:
+                if isinstance(item, str) and item:
+                    system_parts.append(item)
+        if isinstance(instructions_obj, str) and instructions_obj:
+            system_parts.append(instructions_obj)
+        if system_parts:
+            messages.append({"role": "system", "content": "\n".join(system_parts)})
+        messages.append({"role": "user", "content": user_prompt_obj})
+        body: dict[str, object] = {"model": model_name_obj, "messages": messages}
+        if isinstance(model_settings_obj, dict):
+            extra_body_obj = model_settings_obj.get("extra_body")
+            if isinstance(extra_body_obj, dict):
+                for key, value in extra_body_obj.items():
+                    if key not in body:
+                        body[key] = value
+        base_url = base_url_obj.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            url = base_url
+        else:
+            url = f"{base_url}/chat/completions"
+        return {
+            "method": "POST",
+            "url": url,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(body, ensure_ascii=False),
+        }
+
+    def to_curl(self) -> str:
+        request_obj = self._request_from_context()
+        if request_obj is None:
+            request_obj = self._reconstructed_request_from_context()
+        if request_obj is None:
+            return "curl"
+        method_obj = request_obj.get("method")
+        url_obj = request_obj.get("url")
+        headers_obj = request_obj.get("headers")
+        body_obj = request_obj.get("body")
+        if not isinstance(method_obj, str) or not isinstance(url_obj, str):
+            return "curl"
+        command_parts: list[str] = ["curl", "-X", shlex.quote(method_obj)]
+        if isinstance(headers_obj, dict):
+            for key_obj, value_obj in headers_obj.items():
+                if not isinstance(key_obj, str) or not isinstance(value_obj, str):
+                    continue
+                header_value = f"{key_obj}: {value_obj}"
+                command_parts.extend(["-H", shlex.quote(header_value)])
+        if isinstance(body_obj, str) and body_obj:
+            command_parts.extend(["--data-raw", shlex.quote(body_obj)])
+        command_parts.append(shlex.quote(url_obj))
+        return " ".join(command_parts)
+
+
 class QuickAgent:
     def __init__(
         self,
@@ -73,6 +155,7 @@ class QuickAgent:
         llm_log_path: Path | str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, object] | None = None,
+        client: openai.AsyncOpenAI | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
@@ -103,6 +186,7 @@ class QuickAgent:
         self.http_request_log: list[dict[str, object]] = []
         self.http_response_log: list[dict[str, object]] = []
         self._http_log_max_entries: int = 200
+        self.execution_log: list[ExecutionLogEntry] = []
 
         headers: dict[str, str] = dict(self.model_spec.extra_headers or {})
         if extra_headers is not None:
@@ -113,10 +197,11 @@ class QuickAgent:
         if extra_body is not None:
             body.update(extra_body)
         self.extra_body = body
+        self.client: openai.AsyncOpenAI | None = client
 
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.model: OpenAIChatModel = build_model(
-            self.model_spec, http_client=self._http_client
+            self.model_spec, http_client=self._http_client, client=self.client
         )
         self.state: ChainState = self._init_state()
         self._enable_llm_request_logging: bool = enable_llm_request_logging
@@ -222,6 +307,7 @@ class QuickAgent:
             llm_log_path=self._llm_log_path,
             extra_headers=self.extra_headers,
             extra_body=self.extra_body,
+            client=self.client,
         )
         if chunk_agent.has_tools():
             if chunk_agent.toolset is None:
@@ -280,6 +366,7 @@ class QuickAgent:
             record_http_traffic=self._record_http_traffic,
             enable_llm_request_logging=self._enable_llm_request_logging,
             llm_log_path=self._llm_log_path,
+            client=self.client,
         )
         return await agent.run()
 
@@ -492,9 +579,15 @@ class QuickAgent:
         usage = getattr(response, "usage", {})
         self._capture_metrics(usage=usage, response=response)
 
+    def _effective_base_url(self) -> str:
+        if self.client is not None:
+            return str(self.client.base_url).rstrip("/")
+        return self.model_spec.base_url.rstrip("/")
+
     def _record_llm_request(
         self,
         *,
+        call_site: str,
         step_id: str | None,
         step_kind: str,
         output_schema: str | None,
@@ -503,13 +596,20 @@ class QuickAgent:
         user_prompt: str,
         model_settings: ModelSettings | None,
     ) -> None:
+        self._record_execution_log(
+            call_site=call_site,
+            instructions=instructions,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
         payload: dict[str, object] = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "request_state": "before_request_start",
             "agent_id": self._agent_id,
             "model": {
                 "provider": self.model_spec.provider,
-                "base_url": self.model_spec.base_url,
+                "base_url": self._effective_base_url(),
                 "model_name": self.model_spec.model_name,
             },
             "step": {
@@ -517,6 +617,7 @@ class QuickAgent:
                 "kind": step_kind,
                 "output_schema": output_schema,
             },
+            "call_site": call_site,
             "system_prompt": system_prompt,
             "instructions": instructions,
             "user_prompt": user_prompt,
@@ -682,7 +783,7 @@ class QuickAgent:
         model_settings: ModelSettings | None,
     ) -> dict[str, object]:
         context: dict[str, object] = {
-            "base_url": self.model_spec.base_url,
+            "base_url": self._effective_base_url(),
             "model_name": self.model_spec.model_name,
             "instructions": instructions,
             "system_prompt": system_prompt,
@@ -691,6 +792,28 @@ class QuickAgent:
         }
         context.update(self._last_http_exchange_context())
         return context
+
+    def _record_execution_log(
+        self,
+        *,
+        call_site: str,
+        instructions: str | None,
+        system_prompt: str | list[str],
+        user_prompt: str,
+        model_settings: ModelSettings | None,
+    ) -> dict[str, object]:
+        request_context = self._unexpected_model_behavior_request_context(
+            instructions=instructions,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
+        self.execution_log.append(
+            ExecutionLogEntry(request_context=request_context, call_site=call_site)
+        )
+        if len(self.execution_log) > self._http_log_max_entries:
+            del self.execution_log[0]
+        return request_context
 
     async def _run_text_step(
         self,
@@ -711,6 +834,7 @@ class QuickAgent:
             model_settings=self.model_settings_json,
         )
         self._record_llm_request(
+            call_site="run_text_step",
             step_id=step.id,
             step_kind=step.kind,
             output_schema=step.output_schema,
@@ -727,18 +851,6 @@ class QuickAgent:
         )
         try:
             result = await agent.run(user_prompt)
-        except (UnexpectedModelBehavior, ValidationError) as error:
-            raise QuickAgentUnexpectedModelBehaviorException(
-                original_exception=error,
-                request_context=self._unexpected_model_behavior_request_context(
-                    instructions=step_instructions,
-                    system_prompt=self._normalize_system_prompt(
-                        self.loaded.system_prompt
-                    ),
-                    user_prompt=user_prompt,
-                    model_settings=self.model_settings_json,
-                ),
-            ) from error
         except ModelHTTPError as error:
             mapped_error = self._map_model_http_error(error)
             if mapped_error is not None:
@@ -782,6 +894,7 @@ class QuickAgent:
             model_settings=model_settings,
         )
         self._record_llm_request(
+            call_site="run_structured_step",
             step_id=step.id,
             step_kind=step.kind,
             output_schema=step.output_schema,
@@ -799,18 +912,6 @@ class QuickAgent:
         )
         try:
             result = await agent.run(user_prompt)
-        except UnexpectedModelBehavior as error:
-            raise QuickAgentUnexpectedModelBehaviorException(
-                original_exception=error,
-                request_context=self._unexpected_model_behavior_request_context(
-                    instructions=step_instructions,
-                    system_prompt=self._normalize_system_prompt(
-                        self.loaded.system_prompt
-                    ),
-                    user_prompt=user_prompt,
-                    model_settings=model_settings,
-                ),
-            ) from error
         except ModelHTTPError as error:
             mapped_error = self._map_model_http_error(error)
             if mapped_error is not None:
@@ -967,13 +1068,17 @@ def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]
 
 
 def build_model(
-    model_spec: ModelSpec, *, http_client: httpx.AsyncClient | None = None
+    model_spec: ModelSpec,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+    client: openai.AsyncOpenAI | None = None,
 ) -> OpenAIChatModel:
     api_key = os.environ.get(model_spec.api_key_env, "noop")
-    if http_client is None:
-        provider = OpenAIProvider(base_url=model_spec.base_url, api_key=api_key)
-    else:
-        provider = OpenAIProvider(
+    provider = (
+        OpenAIProvider(openai_client=client)
+        if client is not None
+        else OpenAIProvider(
             base_url=model_spec.base_url, api_key=api_key, http_client=http_client
         )
+    )
     return OpenAIChatModel(model_spec.model_name, provider=provider)

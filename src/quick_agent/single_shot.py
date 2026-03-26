@@ -16,12 +16,11 @@ from openai.types.shared_params.response_format_json_schema import (
 )
 from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.settings import ModelSettings
 
 from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
-    QuickAgentUnexpectedModelBehaviorException,
 )
 from quick_agent.json_utils import extract_first_json_object
 from quick_agent.types import AgentResult
@@ -81,8 +80,10 @@ def _parse_structured_result(
             return schema_cls.model_validate(raw_output)
         return schema_cls.model_validate_json(raw_output)
     except ValidationError:
-        extracted = extract_first_json_object(raw_output)
-        return schema_cls.model_validate_json(extracted)
+        if isinstance(raw_output, str):
+            extracted = extract_first_json_object(raw_output)
+            return schema_cls.model_validate_json(extracted)
+        raise
 
 
 async def _run_single_shot_text_via_pydantic_ai(
@@ -104,16 +105,6 @@ async def _run_single_shot_text_via_pydantic_ai(
     )
     try:
         result = await runner.run(user_prompt)
-    except (UnexpectedModelBehavior, ValidationError) as error:
-        raise QuickAgentUnexpectedModelBehaviorException(
-            original_exception=error,
-            request_context=agent._unexpected_model_behavior_request_context(
-                instructions=instructions,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model_settings=model_settings,
-            ),
-        ) from error
     except ModelHTTPError as error:
         mapped_error = agent._map_model_http_error(error)
         if mapped_error is not None:
@@ -143,16 +134,6 @@ async def _run_single_shot_structured_via_pydantic_ai(
     )
     try:
         result = await runner.run(user_prompt)
-    except (UnexpectedModelBehavior, ValidationError) as error:
-        raise QuickAgentUnexpectedModelBehaviorException(
-            original_exception=error,
-            request_context=agent._unexpected_model_behavior_request_context(
-                instructions=instructions,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model_settings=model_settings,
-            ),
-        ) from error
     except ModelHTTPError as error:
         mapped_error = agent._map_model_http_error(error)
         if mapped_error is not None:
@@ -177,7 +158,7 @@ async def _run_single_shot_structured_via_openai_sdk(
         )
     api_key = os.environ.get(agent.model_spec.api_key_env, "noop")
     timeout_seconds = agent.model_spec.timeout_seconds
-    client = openai.AsyncOpenAI(
+    client = agent.client or openai.AsyncOpenAI(
         api_key=api_key,
         base_url=agent.model_spec.base_url,
         timeout=timeout_seconds,
@@ -244,6 +225,7 @@ async def run_single_shot(
         model_settings = agent._build_structured_model_settings(schema_cls=schema_cls)
 
     agent._record_llm_request(
+        call_site="run_single_shot",
         step_id=None,
         step_kind="single_shot",
         output_schema=agent.loaded.spec.output.output_schema,
