@@ -14,7 +14,7 @@ model:
   provider: openai-compatible
   base_url: "http://localhost:11434/v1"
   model_name: qwen3:0.6b
-  max_tokens: 1024
+  max_completion_tokens: 1024
 chain:
   - id: summarize
     kind: text

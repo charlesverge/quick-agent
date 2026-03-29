@@ -14,7 +14,7 @@ model:
   api_key_env: "OPENAI_API_KEY"
   model_name: "llama3"
   temperature: 0.2
-  max_tokens: 2048
+  max_completion_tokens: 2048
   timeout_seconds: 300
   keepalive_expiry_seconds: 120
 tools:

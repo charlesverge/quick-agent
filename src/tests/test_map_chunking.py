@@ -4,7 +4,7 @@ from quick_agent.mapping.map_semchunk import MapSemchunk
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 
 
-def test_map_chunks_splits_by_max_tokens() -> None:
+def test_map_chunks_splits_by_max_completion_tokens() -> None:
     mapper = MapChunks()
     config = ChunkProcessingSpec(
         mode="map_chunks",

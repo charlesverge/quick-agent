@@ -10,7 +10,7 @@ model:
   api_key_env: "SGLANG_API_KEY"
   model_name: "qwen/qwen2.5-32b-instruct"
   temperature: 0.2
-  max_tokens: 2048
+  max_completion_tokens: 2048
 
 # Tools available to this agent (tool IDs resolved by the orchestrator)
 tools:

@@ -10,7 +10,7 @@ model:
   api_key_env: "OLLAMA_API_KEY"
   model_name: "gpt-oss:20b"
   temperature: 0.2
-  max_tokens: 2048
+  max_completion_tokens: 2048
 
 # Tools available to this agent (tool IDs resolved by the orchestrator)
 tools: []
@@ -52,7 +52,7 @@ Do not create comments outside of the structured output.
 
 ## Required Fields
 
-1. Function name - must be provided, snake_case format
+1. Function name - must be provided, snake\_case format
 2. Parameters with types - each parameter must have a type annotation
 3. Return type - must be specified (use `None` if no return)
 4. Behavior description - must describe what the function does
@@ -61,28 +61,33 @@ Do not create comments outside of the structured output.
 ## Validation Rules
 
 ### Function Name
+
 - Must be non-empty
-- Must use snake_case (lowercase with underscores)
+- Must use snake\_case (lowercase with underscores)
 - Must not start with a number
 - Must not be a Python reserved keyword
 
 ### Parameters with Types
+
 - Each parameter must follow format: `name: Type`
 - Type must be a valid Python type or imported type
 - Optional parameters must specify default values
 - If there are no parameters, the following is accepted: None, an empty list, or no content
 
 ### Return Type
+
 - Must be explicitly stated
 - Use `None` for functions with no return value
 - Complex types must be properly annotated (e.g., `List[str]`, `Dict[str, int]`)
 
 ### Behavior Description
+
 - Minimum 10 characters
 - Must describe the function's purpose
 - Should mention expected inputs and outputs
 
 ### Target File Path
+
 - Must end with `.py`
 - Must be an relative path
 - Project Root level files or within subdirectories are acceptable
@@ -91,15 +96,18 @@ Do not create comments outside of the structured output.
 ## step:execute
 
 Goal:
+
 - Perform the validation checks on all required fields.
 - Summarize findings in plain text and list any missing or invalid fields.
 
 Constraints:
+
 - Do not output JSON in this step.
 
 ## step:finalize
 
 Goal:
+
 - Return a `ValidationResult` JSON object.
 - The object must include `valid` and should include any issues.
 - If invalid, include the list of issues with `field` and `reason`.

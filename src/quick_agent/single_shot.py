@@ -189,7 +189,7 @@ async def _run_single_shot_structured_via_openai_sdk(
             model=agent.model_spec.model_name,
             messages=messages,
             temperature=agent.model_spec.temperature,
-            max_tokens=agent.model_spec.max_tokens,
+            max_completion_tokens=agent.model_spec.max_completion_tokens,
             response_format=response_format,
             extra_body=extra_body,
         )

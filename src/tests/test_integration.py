@@ -3,9 +3,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import BaseModel
+
 from quick_agent.orchestrator import Orchestrator
 from quick_agent.types import AgentResult
-from pydantic import BaseModel
 
 
 async def _run_agent(orchestrator: Orchestrator, agent_id: str, input_path: Path) -> str:
@@ -178,7 +179,7 @@ Use the extracted JSON from the chain state as the ContactInfo object.
 
 
 def test_orchestrator_runs_true_single_shot_structured_output(tmp_path: Path) -> None:
-    _require_env("OLLAMA_BASE_URL")
+    _require_env("OPENAI_API_KEY")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
 
@@ -186,7 +187,7 @@ def test_orchestrator_runs_true_single_shot_structured_output(tmp_path: Path) ->
     agents_dir.mkdir(parents=True)
 
     base_url = os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
-    model_name = os.environ.get("OLLAMA_MODEL") or "gemma3:4b"
+    model_name = os.environ.get("OLLAMA_MODEL") or "qwen2.5:7b"
     _require_ollama(base_url)
 
     output_path = safe_root / "out" / "single_shot_result.json"
@@ -239,7 +240,7 @@ Extract values from the input and return JSON only for the Output schema.
 
 
 def test_orchestrator_runs_true_single_shot_structured_output_inline_only(tmp_path: Path) -> None:
-    _require_env("OLLAMA_BASE_URL")
+    _require_env("OPENAI_API_KEY")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
 
@@ -247,7 +248,7 @@ def test_orchestrator_runs_true_single_shot_structured_output_inline_only(tmp_pa
     agents_dir.mkdir(parents=True)
 
     base_url = os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
-    model_name = os.environ.get("OLLAMA_MODEL") or "gemma3:4b"
+    model_name = os.environ.get("OLLAMA_MODEL") or "qwen2.5:7b"
     _require_ollama(base_url)
 
     expected_output_path = safe_root / "out" / "should_not_exist.json"
@@ -516,7 +517,7 @@ model:
   api_key_env: OPENAI_API_KEY
   model_name: {model_name}
   temperature: 0.1
-  max_tokens: 2048
+  max_completion_tokens: 2048
 tools:
   - "filesystem_list_files"
   - "filesystem_find_closest_file"

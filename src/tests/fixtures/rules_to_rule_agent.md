@@ -10,7 +10,7 @@ model:
   api_key_env: "OPENAI_API_KEY"
   model_name: "gpt-5.2"
   temperature: 0.2
-  max_tokens: 8192
+  max_completion_tokens: 8192
 
 # Tools available to this agent
 tools:
@@ -97,7 +97,7 @@ model:
   api_key_env: "OPENAI_API_KEY"
   model_name: "gpt-5.2"
   temperature: 0.2
-  max_tokens: 2048
+  max_completion_tokens: 2048
 tools:
   - "filesystem.read_text"
 schemas:

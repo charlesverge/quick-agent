@@ -5,7 +5,7 @@ model:
   provider: openai-compatible
   base_url: "http://localhost:11434/v1"
   model_name: qwen3:0.6b
-  max_tokens: 1024
+  max_completion_tokens: 1024
 chain:
   - id: summarize_items
     kind: text
@@ -23,7 +23,7 @@ handoff:
 
 The input is JSON from a parent agent and contains an `items` list with per-chunk outputs.
 
-## step:summarize_items
+## step:summarize\_items
 
 Create one consolidated summary across all chunk items.
 

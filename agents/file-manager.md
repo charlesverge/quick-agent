@@ -10,7 +10,7 @@ model:
   api_key_env: "OPENAI_API_KEY"
   model_name: "gpt-4o"
   temperature: 0.1
-  max_tokens: 2048
+  max_completion_tokens: 2048
 
 # Tools available to this agent
 tools:
