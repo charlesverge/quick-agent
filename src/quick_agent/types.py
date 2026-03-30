@@ -1,3 +1,3 @@
 from pydantic import BaseModel
 
-type AgentResult = BaseModel | dict[str, object] | str
+type AgentResult = BaseModel | dict[str, object] | str | list["AgentResult"]

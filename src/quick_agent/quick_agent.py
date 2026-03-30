@@ -272,15 +272,17 @@ class QuickAgent:
         if debug_output_file:
             write_output(Path(debug_output_file), sample_result, self.permissions)
 
-    async def _apply_chunk_processing(self) -> dict[str, object] | None:
+    async def _apply_chunk_processing(self) -> list[AgentResult] | None:
         content_processing = self.loaded.spec.content_processing
         if content_processing is None or content_processing.chunk_processing is None:
             return None
         map_config = content_processing.chunk_processing
         chunk_texts = self._run_chunk_processing(self.run_input.text, map_config)
         if self._is_empty_agent_body():
-            return {"items": chunk_texts}
-        items: list[object] = []
+            empty_items: list[AgentResult] = []
+            empty_items.extend(chunk_texts)
+            return empty_items
+        items: list[AgentResult] = []
         index = 0
         while index < len(chunk_texts):
             chunk_text = chunk_texts[index]
@@ -290,7 +292,7 @@ class QuickAgent:
             else:
                 items.append(chunk_output)
             index += 1
-        return {"items": items}
+        return items
 
     async def _run_chunk_agent(self, chunk_text: str) -> AgentResult:
         chunk_agent = QuickAgent(
@@ -1023,7 +1025,7 @@ class QuickAgent:
         out_path = Path(output_file)
         if isinstance(last_step_output, BaseModel):
             text = last_step_output.model_dump_json(indent=2)
-        elif isinstance(last_step_output, dict):
+        elif isinstance(last_step_output, (dict, list)):
             text = json.dumps(last_step_output, indent=2)
         else:
             text = str(last_step_output)
@@ -1036,7 +1038,7 @@ class QuickAgent:
         if self.loaded.spec.handoff.enabled and self.loaded.spec.handoff.agent_id:
             if isinstance(last_step_output, BaseModel):
                 payload = last_step_output.model_dump_json(indent=2)
-            elif isinstance(last_step_output, dict):
+            elif isinstance(last_step_output, (dict, list)):
                 payload = json.dumps(last_step_output, indent=2)
             else:
                 payload = str(last_step_output)

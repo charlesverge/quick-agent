@@ -76,9 +76,9 @@ def _parse_structured_result(
     if isinstance(raw_output, BaseModel):
         return raw_output
     try:
-        if isinstance(raw_output, dict):
-            return schema_cls.model_validate(raw_output)
-        return schema_cls.model_validate_json(raw_output)
+        if isinstance(raw_output, str):
+            return schema_cls.model_validate_json(raw_output)
+        return schema_cls.model_validate(raw_output)
     except ValidationError:
         if isinstance(raw_output, str):
             extracted = extract_first_json_object(raw_output)

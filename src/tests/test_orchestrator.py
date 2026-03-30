@@ -1361,9 +1361,8 @@ async def test_apply_chunk_processing_runs_chain_per_chunk(
     result = await qa._apply_chunk_processing()
 
     assert result is not None
-    assert "items" in result
-    items = result["items"]
-    assert isinstance(items, list)
+    assert isinstance(result, list)
+    items = result
     assert len(items) >= 2
     assert all(entry == "processed" for entry in items)
     assert len(run_chunk_agent_recorder.calls) == len(items)
@@ -1405,10 +1404,8 @@ async def test_run_returns_chunk_text_items_without_llm_for_empty_body(
 
     output = await qa.run()
 
-    assert isinstance(output, dict)
-    assert "items" in output
-    items = output["items"]
-    assert isinstance(items, list)
+    assert isinstance(output, list)
+    items = output
     assert len(items) >= 2
     assert all(isinstance(entry, str) for entry in items)
     assert len(run_chunk_agent_recorder.calls) == 0
@@ -1441,10 +1438,8 @@ async def test_run_returns_chunk_output_when_chunk_processing_configured(
 
     output = await qa.run()
 
-    assert isinstance(output, dict)
-    assert list(output.keys()) == ["items"]
-    items = output["items"]
-    assert isinstance(items, list)
+    assert isinstance(output, list)
+    items = output
     assert len(items) >= 1
     assert all(entry == "processed" for entry in items)
     assert len(run_chunk_agent_recorder.calls) == len(items)
