@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 
 class ModelSpec(BaseModel):
@@ -12,7 +12,8 @@ class ModelSpec(BaseModel):
     model_name: str = Field(default="gpt-5.2")
     temperature: float = 0.2
     max_completion_tokens: int = 2048
+    num_ctx: int | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
     keepalive_expiry_seconds: float | None = Field(default=None, gt=0)
     extra_headers: dict[str, str] | None = None
-    extra_body: dict[str, object] | None = None
+    extra_body: dict[str, JsonValue] | None = None

@@ -8,39 +8,41 @@ from typing import Any, Literal, cast
 import httpx
 import pytest
 from pydantic import BaseModel
-from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.tools import Tool
+from pydantic_ai.toolsets import FunctionToolset
 
-from quick_agent import quick_agent as qa_module
-from quick_agent import single_shot as single_shot_module
 from quick_agent import agent_tools as tools_module
 from quick_agent import input_adaptors as input_adaptors_module
+from quick_agent import quick_agent as qa_module
+from quick_agent import single_shot as single_shot_module
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
-from quick_agent.models import AgentSpec
-from quick_agent.models import ChainStepSpec
-from quick_agent.models import LoadedAgentFile
-from quick_agent.models import ModelSpec
-from quick_agent.models.content_processing_spec import ContentProcessingSpec
-from quick_agent.models.content_processing_spec import ChunkProcessingSpec
-from quick_agent.models.content_processing_spec import SampleSpec
+from quick_agent.exceptions import (
+    QuickAgentChatNotSupportedException,
+    QuickAgentToolsNotSupportedException,
+)
+from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
+from quick_agent.models.content_processing_spec import (
+    ChunkProcessingSpec,
+    ContentProcessingSpec,
+    SampleSpec,
+)
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.orchestrator import Orchestrator
-from quick_agent.exceptions import QuickAgentChatNotSupportedException
-from quick_agent.exceptions import QuickAgentToolsNotSupportedException
-from quick_agent.quick_agent import ExecutionLogEntry
-from quick_agent.quick_agent import QuickAgent
-from quick_agent.quick_agent import build_model
-from quick_agent.quick_agent import resolve_schema
 from quick_agent.prompting import make_user_prompt
+from quick_agent.quick_agent import (
+    ExecutionLogEntry,
+    QuickAgent,
+    build_model,
+    resolve_schema,
+)
 
 
 class DummyProvider:
@@ -656,7 +658,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     assert output == "hello"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "systemdo thing"
-    assert FakeAgent.last_init["system_prompt"] == []
+    assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_init["output_type"] is str
 
 
@@ -830,7 +832,7 @@ async def test_run_text_step_no_instructions_or_system_prompt(
     assert output == "ok"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "do thing"
-    assert FakeAgent.last_init["system_prompt"] == []
+    assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
@@ -912,7 +914,7 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
     assert output == "ok"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "Use the tool.do thing"
-    assert FakeAgent.last_init["system_prompt"] == []
+    assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 
@@ -1496,7 +1498,7 @@ async def test_run_chain_single_shot_system_prompt_only(
 
     assert output == "hello"
     assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] is None
+    assert FakeAgent.last_init["instructions"] == ""
     assert FakeAgent.last_init["system_prompt"] == "You are concise."
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
@@ -1536,7 +1538,7 @@ async def test_run_chain_single_shot_instructions_only(
     assert output == "hello"
     assert FakeAgent.last_init is not None
     assert FakeAgent.last_init["instructions"] == "Use the tool."
-    assert FakeAgent.last_init["system_prompt"] == []
+    assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
 
 

@@ -13,7 +13,7 @@ from typing import Any, Callable, Type, TypeAlias, TypedDict
 import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -40,8 +40,8 @@ from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
-from quick_agent.single_shot import run_single_shot
 from quick_agent.samplers.simple_ratios import SampleRatios
+from quick_agent.single_shot import run_single_shot
 from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
 
@@ -154,7 +154,7 @@ class QuickAgent:
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
         extra_headers: dict[str, str] | None = None,
-        extra_body: dict[str, object] | None = None,
+        extra_body: dict[str, JsonValue] | None = None,
         client: openai.AsyncOpenAI | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
@@ -193,10 +193,10 @@ class QuickAgent:
             headers.update(extra_headers)
         self.extra_headers = headers
 
-        body: dict[str, object] = dict(self.model_spec.extra_body or {})
+        new_extra_body: dict[str, JsonValue] = dict(self.model_spec.extra_body or {})
         if extra_body is not None:
-            body.update(extra_body)
-        self.extra_body = body
+            new_extra_body.update(extra_body)
+        self.extra_body: dict[str, JsonValue] = new_extra_body
         self.client: openai.AsyncOpenAI | None = client
 
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
@@ -385,7 +385,7 @@ class QuickAgent:
         if model_spec.provider == "openai-compatible":
             # Ollama OpenAI-compatible API uses "format": "json" to force JSON output.
             if model_spec.base_url != "https://api.openai.com/v1":
-                extra_body: dict[str, object] = {"format": "json"}
+                extra_body: dict = {"format": "json"}
                 if self.extra_body:
                     extra_body.update(self.extra_body)
                 if extra_body:
@@ -451,7 +451,7 @@ class QuickAgent:
             else:
                 model_settings_dict = self.model_settings_json
             extra_body_obj = model_settings_dict.get("extra_body")
-            extra_body: dict[str, Any] = {}
+            extra_body: dict = {}
             if isinstance(extra_body_obj, dict):
                 extra_body = dict(extra_body_obj)
             if "response_format" not in extra_body:
@@ -644,16 +644,6 @@ class QuickAgent:
                 self._llm_log_path,
             )
 
-    def _normalize_agent_text(self, text: str) -> str | None:
-        if text:
-            return text
-        return None
-
-    def _normalize_system_prompt(self, text: str) -> str | list[str]:
-        if text:
-            return text
-        return []
-
     def _map_model_http_error(
         self, error: ModelHTTPError
     ) -> QuickAgentException | None:
@@ -828,7 +818,7 @@ class QuickAgent:
         agent = Agent(
             self.model,
             instructions=step_instructions,
-            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            system_prompt=self.loaded.system_prompt,
             toolsets=toolsets,
             output_type=str,
             model_settings=self.model_settings_json,
@@ -839,7 +829,7 @@ class QuickAgent:
             step_kind=step.kind,
             output_schema=step.output_schema,
             instructions=step_instructions,
-            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
             model_settings=self.model_settings_json,
         )
@@ -888,7 +878,7 @@ class QuickAgent:
         agent = Agent(
             self.model,
             instructions=step_instructions,
-            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            system_prompt=self.loaded.system_prompt,
             toolsets=toolsets,
             output_type=schema_cls,
             model_settings=model_settings,
@@ -899,7 +889,7 @@ class QuickAgent:
             step_kind=step.kind,
             output_schema=step.output_schema,
             instructions=step_instructions,
-            system_prompt=self._normalize_system_prompt(self.loaded.system_prompt),
+            system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
             model_settings=model_settings,
         )

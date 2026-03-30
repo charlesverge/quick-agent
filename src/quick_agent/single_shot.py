@@ -218,8 +218,8 @@ async def run_single_shot(
     agent: QuickAgent, *, schema_cls: Type[BaseModel] | None
 ) -> BaseModel | str:
     user_prompt = agent._build_single_shot_prompt()
-    instructions = agent._normalize_agent_text(agent.loaded.instructions)
-    system_prompt = agent._normalize_system_prompt(agent.loaded.system_prompt)
+    instructions = agent.loaded.instructions
+    system_prompt = agent.loaded.system_prompt
     model_settings = agent.model_settings_json
     if schema_cls is not None:
         model_settings = agent._build_structured_model_settings(schema_cls=schema_cls)
