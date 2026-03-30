@@ -8,10 +8,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from quick_agent.types import AgentResult
-
 from quick_agent.input_adaptors import InputAdaptor, TextInput
 from quick_agent.orchestrator import Orchestrator
+from quick_agent.types import AgentResult
 
 
 async def run_agent(
@@ -46,6 +45,9 @@ def main() -> None:
     system_tools_dir = package_root / "tools"
     user_agents_dir = Path(args.agents_dir)
     user_tools_dir = Path(args.tools_dir)
+    if not user_agents_dir.exists():
+        logging.error(f"User agents directory does not exist: {user_agents_dir}")
+        exit(1)
 
     agent_roots = [user_agents_dir, system_agents_dir]
     tool_roots = [user_tools_dir, system_tools_dir]

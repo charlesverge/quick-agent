@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from quick_agent.models.loaded_agent_file import LoadedAgentFile, parse_agent_sections
 from yaml.parser import ParserError
-import logging
+
+from quick_agent.models.loaded_agent_file import LoadedAgentFile, parse_agent_sections
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class AgentRegistry:
         path = index.get(agent_id)
         if path is None:
             raise FileNotFoundError(
-                f"Agent not found: {agent_id} (searched: {self.agent_roots})"
+                f"Agent not found: {agent_id} (searched: {self.agent_roots}) available agents: {list(index.keys())}"
             )
         try:
             loaded = LoadedAgentFile(path)
