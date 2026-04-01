@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shlex
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Type, TypeAlias, TypedDict
@@ -13,10 +14,12 @@ from typing import Any, Callable, Type, TypeAlias, TypedDict
 import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
+from openai.types import chat
 from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
@@ -200,8 +203,13 @@ class QuickAgent:
         self.client: openai.AsyncOpenAI | None = client
 
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
+        self.tool_mode: str = self.loaded.spec.tool_mode
+        logger.info(f"Initialized QuickAgent {self._agent_id}, tool_mode: {self.tool_mode}")
         self.model: OpenAIChatModel = build_model(
-            self.model_spec, http_client=self._http_client, client=self.client
+            self.model_spec,
+            http_client=self._http_client,
+            client=self.client,
+            tool_mode=self.tool_mode,
         )
         self.state: ChainState = self._init_state()
         self._enable_llm_request_logging: bool = enable_llm_request_logging
@@ -1048,6 +1056,24 @@ class QuickAgent:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Ollama-safe model subclass: patches content=None → content="" in assistant
+# messages to work around Ollama rejecting null content as <nil>.
+# See docs/tool_mode.md for detailed reasoning.
+# ---------------------------------------------------------------------------
+class OllamaSafeChatModel(OpenAIChatModel):
+    """OpenAIChatModel that replaces content=None with content='' in assistant
+    messages, preventing Ollama's 'invalid message content type: <nil>' error."""
+
+    @dataclass
+    class _MapModelResponseContext(OpenAIChatModel._MapModelResponseContext):
+        def _into_message_param(self) -> chat.ChatCompletionAssistantMessageParam:
+            message_param = super()._into_message_param()
+            if message_param.get("content") is None:
+                message_param["content"] = ""
+            return message_param
+
+
 def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]:
     if schema_name not in loaded.spec.schemas:
         raise KeyError(f"Schema {schema_name!r} not registered in agent.md schemas.")
@@ -1064,6 +1090,7 @@ def build_model(
     *,
     http_client: httpx.AsyncClient | None = None,
     client: openai.AsyncOpenAI | None = None,
+    tool_mode: str = "default",
 ) -> OpenAIChatModel:
     api_key = os.environ.get(model_spec.api_key_env, "noop")
     provider = (
@@ -1073,4 +1100,35 @@ def build_model(
             base_url=model_spec.base_url, api_key=api_key, http_client=http_client
         )
     )
-    return OpenAIChatModel(model_spec.model_name, provider=provider)
+    profile = _build_model_profile(tool_mode)
+    logger.info(f"build_model {tool_mode}")
+
+    model_cls: type[OpenAIChatModel] = OpenAIChatModel
+    if tool_mode in ("with_tools", "no_tools"):
+        model_cls = OllamaSafeChatModel
+    if profile is not None:
+        return model_cls(model_spec.model_name, provider=provider, profile=profile)
+    return model_cls(model_spec.model_name, provider=provider)
+
+
+def _build_model_profile(
+    tool_mode: str,
+) -> OpenAIModelProfile | None:
+    """Build an OpenAIModelProfile based on the tool_mode setting.
+
+    - default: no custom profile (pydantic_ai defaults).
+    - no_tools: prompted structured output, avoids tool calling entirely.
+    - with_tools: standard tool mode with OllamaSafeChatModel subclass.
+    - prompted_tools: prompted structured output with tools (experimental).
+    """
+    if tool_mode in ("no_tools", "prompted_tools"):
+        return OpenAIModelProfile(
+            openai_supports_strict_tool_definition=False,
+            default_structured_output_mode="prompted",
+            supports_json_object_output=True,
+        )
+    if tool_mode == "with_tools":
+        return OpenAIModelProfile(
+            openai_supports_strict_tool_definition=False,
+        )
+    return None

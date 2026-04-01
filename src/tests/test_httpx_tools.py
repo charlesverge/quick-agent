@@ -7,19 +7,14 @@ import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.toolsets import FunctionToolset
-
+from quick_agent import quick_agent as qa_module
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import TextInput
-from quick_agent.models import AgentSpec
-from quick_agent.models import ChainStepSpec
-from quick_agent.models import LoadedAgentFile
-from quick_agent.models import ModelSpec
+from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.quick_agent import QuickAgent
-from quick_agent import quick_agent as qa_module
-
 
 DEFAULT_MODEL_NAME = "gpt-4.1-mini"
 
@@ -59,6 +54,7 @@ class BuildModelStub:
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
+        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         return self.model
 
@@ -345,6 +341,7 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
+        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
@@ -415,6 +412,7 @@ async def test_connection_close_header_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
+        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
@@ -484,6 +482,7 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
+        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
@@ -554,6 +553,7 @@ async def test_extra_headers_merge_model_spec_and_param(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
+        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
