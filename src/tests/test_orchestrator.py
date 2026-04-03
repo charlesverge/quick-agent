@@ -106,6 +106,7 @@ class FakeAgent:
     next_response: object = None
     last_init: dict[str, Any] | None = None
     last_prompt: str | None = None
+    last_deps: Any = None
 
     def __init__(
         self,
@@ -125,8 +126,9 @@ class FakeAgent:
             "model_settings": model_settings,
         }
 
-    async def run(self, user_prompt: str) -> FakeAgentResult:
+    async def run(self, user_prompt: str, *, deps: Any = None) -> FakeAgentResult:
         FakeAgent.last_prompt = user_prompt
+        FakeAgent.last_deps = deps
         if FakeAgent.next_error is not None:
             error = FakeAgent.next_error
             FakeAgent.next_error = None
@@ -1496,6 +1498,7 @@ async def test_run_chain_single_shot_system_prompt_only(
     assert FakeAgent.last_init["instructions"] == ""
     assert FakeAgent.last_init["system_prompt"] == "You are concise."
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+    assert FakeAgent.last_deps == {"state": qa.state, "memory": qa.memory}
 
 
 @pytest.mark.anyio
@@ -1535,6 +1538,7 @@ async def test_run_chain_single_shot_instructions_only(
     assert FakeAgent.last_init["instructions"] == "Use the tool."
     assert FakeAgent.last_init["system_prompt"] == ""
     assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+    assert FakeAgent.last_deps == {"state": qa.state, "memory": qa.memory}
 
 
 @pytest.mark.anyio

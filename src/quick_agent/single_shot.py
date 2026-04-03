@@ -104,7 +104,7 @@ async def _run_single_shot_text_via_pydantic_ai(
         model_settings=model_settings,
     )
     try:
-        result = await runner.run(user_prompt)
+        result = await runner.run(user_prompt, deps=agent._tool_deps())
     except ModelHTTPError as error:
         mapped_error = agent._map_model_http_error(error)
         if mapped_error is not None:
@@ -133,7 +133,7 @@ async def _run_single_shot_structured_via_pydantic_ai(
         model_settings=model_settings,
     )
     try:
-        result = await runner.run(user_prompt)
+        result = await runner.run(user_prompt, deps=agent._tool_deps())
     except ModelHTTPError as error:
         mapped_error = agent._map_model_http_error(error)
         if mapped_error is not None:

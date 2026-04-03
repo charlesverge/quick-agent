@@ -60,6 +60,11 @@ class ChainState(TypedDict):
     last_step_output: StepOutput | None
 
 
+class ToolRunDeps(TypedDict):
+    state: ChainState
+    memory: dict[str, Any]
+
+
 class ExecutionLogEntry:
     def __init__(self, *, request_context: dict[str, object], call_site: str) -> None:
         self.request_context = request_context
@@ -158,6 +163,7 @@ class QuickAgent:
         llm_log_path: Path | str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, JsonValue] | None = None,
+        memory: dict[str, Any] | None = None,
         client: openai.AsyncOpenAI | None = None,
     ) -> None:
         self._registry: AgentRegistry = registry
@@ -200,11 +206,14 @@ class QuickAgent:
         if extra_body is not None:
             new_extra_body.update(extra_body)
         self.extra_body: dict[str, JsonValue] = new_extra_body
+        self._memory: dict[str, Any] = memory if memory is not None else {}
         self.client: openai.AsyncOpenAI | None = client
 
         self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.tool_mode: str = self.loaded.spec.tool_mode
-        logger.info(f"Initialized QuickAgent {self._agent_id}, tool_mode: {self.tool_mode}")
+        logger.info(
+            f"Initialized QuickAgent {self._agent_id}, tool_mode: {self.tool_mode}"
+        )
         self.model: OpenAIChatModel = build_model(
             self.model_spec,
             http_client=self._http_client,
@@ -850,7 +859,7 @@ class QuickAgent:
             step.id,
         )
         try:
-            result = await agent.run(user_prompt)
+            result = await agent.run(user_prompt, deps=self._tool_deps())
         except ModelHTTPError as error:
             mapped_error = self._map_model_http_error(error)
             if mapped_error is not None:
@@ -911,7 +920,7 @@ class QuickAgent:
             step.output_schema,
         )
         try:
-            result = await agent.run(user_prompt)
+            result = await agent.run(user_prompt, deps=self._tool_deps())
         except ModelHTTPError as error:
             mapped_error = self._map_model_http_error(error)
             if mapped_error is not None:
@@ -1025,6 +1034,17 @@ class QuickAgent:
         if toolset is None:
             return []
         return [toolset]
+
+    def _tool_deps(self) -> ToolRunDeps:
+        return {"state": self.state, "memory": self._memory}
+
+    @property
+    def memory(self) -> dict[str, Any]:
+        return self._memory
+
+    @memory.setter
+    def memory(self, memory: dict[str, Any]) -> None:
+        self._memory = memory
 
     def _write_last_step_output(self, last_step_output: AgentResult) -> Path:
         output_file = self.loaded.spec.output.file
