@@ -7,13 +7,12 @@ from typing import Optional
 
 import openai
 
-from quick_agent.types import AgentResult
-
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import InputAdaptor
 from quick_agent.quick_agent import QuickAgent
+from quick_agent.types import AgentResult
 
 
 class Orchestrator:
@@ -28,6 +27,7 @@ class Orchestrator:
         self.directory_permissions: DirectoryPermissions = DirectoryPermissions(
             safe_dir
         )
+        self.agent : QuickAgent | None = None
 
     async def run(
         self,
@@ -39,7 +39,7 @@ class Orchestrator:
         llm_log_path: Path | str | None = None,
         client: openai.AsyncOpenAI | None = None,
     ) -> AgentResult:
-        agent = QuickAgent(
+        self.agent = agent = QuickAgent(
             registry=self.registry,
             tools=self.tools,
             directory_permissions=self.directory_permissions,
