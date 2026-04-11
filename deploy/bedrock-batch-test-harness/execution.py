@@ -1,0 +1,467 @@
+"""Execution stage for bedrock batch test harness."""
+
+from __future__ import annotations
+
+import anyio
+import json
+import logging
+import time
+from pathlib import Path
+from uuid import uuid4
+
+from quick_agent.agent_registry import AgentRegistry
+from quick_agent.agent_tools import AgentTools
+from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.input_adaptors import TextInput
+from quick_agent.models.batch_request import BatchImportRequest
+from quick_agent.models.batch_request import BatchSubmitRequest
+from quick_agent.quick_agent import QuickAgent
+from settings import HarnessSettings
+from utils import run_aws
+from utils import run_aws_json
+from utils import write_jsonl
+
+logger = logging.getLogger("bedrock_batch_test_harness")
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Expected s3 uri, got: {uri}")
+    without_scheme = uri[len("s3://") :]
+    parts = without_scheme.split("/", 1)
+    bucket = parts[0]
+    key = "" if len(parts) == 1 else parts[1]
+    if not bucket:
+        raise ValueError(f"Invalid s3 uri bucket: {uri}")
+    return bucket, key
+
+
+def _extract_bedrock_output_text(model_output: dict[str, object]) -> str:
+    content_obj = model_output.get("content")
+    if isinstance(content_obj, list):
+        text_items: list[str] = []
+        for item in content_obj:
+            if not isinstance(item, dict):
+                continue
+            if "text" not in item:
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                text_items.append(text)
+        if text_items:
+            return "".join(text_items)
+    choices_obj = model_output.get("choices")
+    if isinstance(choices_obj, list):
+        index = 0
+        while index < len(choices_obj):
+            choice_obj = choices_obj[index]
+            if isinstance(choice_obj, dict):
+                message_obj = choice_obj.get("message")
+                if isinstance(message_obj, dict):
+                    content_value = message_obj.get("content")
+                    if isinstance(content_value, str) and content_value:
+                        return content_value
+            index += 1
+    raise ValueError(
+        "Bedrock result missing supported output fields (modelOutput.content or modelOutput.choices[].message.content)."
+    )
+
+
+def _create_job(
+    *,
+    model_id: str,
+    role_arn: str,
+    s3_input_uri: str,
+    s3_output_uri: str,
+    job_name: str,
+    region: str,
+    aws_profile: str,
+) -> str:
+    response = run_aws_json(
+        [
+            "--region",
+            region,
+            "bedrock",
+            "create-model-invocation-job",
+            "--model-id",
+            model_id,
+            "--role-arn",
+            role_arn,
+            "--job-name",
+            job_name,
+            "--input-data-config",
+            json.dumps({"s3InputDataConfig": {"s3Uri": s3_input_uri}}),
+            "--output-data-config",
+            json.dumps({"s3OutputDataConfig": {"s3Uri": s3_output_uri}}),
+        ],
+        profile=aws_profile,
+    )
+    job_arn = response.get("jobArn")
+    if not isinstance(job_arn, str):
+        raise ValueError("Bedrock create-model-invocation-job did not return jobArn.")
+    return job_arn
+
+
+def _wait_for_job(
+    *,
+    job_arn: str,
+    region: str,
+    poll_seconds: int,
+    timeout_seconds: int,
+    aws_profile: str,
+) -> dict[str, object]:
+    start = time.time()
+    poll_count = 0
+    while True:
+        poll_count += 1
+        response = run_aws_json(
+            [
+                "--region",
+                region,
+                "bedrock",
+                "get-model-invocation-job",
+                "--job-identifier",
+                job_arn,
+            ],
+            profile=aws_profile,
+        )
+        status = response.get("status")
+        elapsed = time.time() - start
+        logger.info(
+            f"execution: poll status > job_arn={job_arn} poll={poll_count} status={status} elapsed_seconds={int(elapsed)}"
+        )
+        if status == "Completed":
+            return response
+        if status in ("Failed", "Stopped", "PartiallyCompleted"):
+            raise RuntimeError(f"Bedrock job ended with status={status}: {response}")
+        if elapsed > timeout_seconds:
+            raise TimeoutError(
+                f"Timed out waiting for Bedrock job completion after {timeout_seconds}s."
+            )
+        time.sleep(poll_seconds)
+
+
+def _job_id_from_arn(job_arn: str) -> str:
+    if "/" not in job_arn:
+        raise ValueError(f"Unable to parse job id from arn: {job_arn}")
+    job_id = job_arn.rsplit("/", 1)[-1]
+    if not job_id:
+        raise ValueError(f"Unable to parse job id from arn: {job_arn}")
+    return job_id
+
+
+def _expected_output_jsonl_uri(
+    *, s3_output_uri: str, input_jsonl: Path, job_id: str
+) -> str:
+    if not s3_output_uri.endswith("/"):
+        s3_output_uri = f"{s3_output_uri}/"
+    return f"{s3_output_uri}{job_id}/{input_jsonl.name}.out"
+
+
+def _assert_output_exists(*, output_s3_uri: str, region: str, aws_profile: str) -> None:
+    bucket, key = _parse_s3_uri(output_s3_uri)
+    if not key:
+        raise ValueError(f"Expected output object key in s3 uri: {output_s3_uri}")
+    response = run_aws_json(
+        [
+            "--region",
+            region,
+            "s3api",
+            "head-object",
+            "--bucket",
+            bucket,
+            "--key",
+            key,
+        ],
+        profile=aws_profile,
+    )
+    if not isinstance(response, dict):
+        raise ValueError(f"Unable to verify expected output object: {output_s3_uri}")
+
+
+def _find_output_jsonl(
+    *,
+    s3_output_uri: str,
+    region: str,
+    aws_profile: str,
+    input_jsonl: Path,
+    job_id: str,
+) -> str:
+    expected_uri = _expected_output_jsonl_uri(
+        s3_output_uri=s3_output_uri,
+        input_jsonl=input_jsonl,
+        job_id=job_id,
+    )
+    _assert_output_exists(
+        output_s3_uri=expected_uri,
+        region=region,
+        aws_profile=aws_profile,
+    )
+    return expected_uri
+
+
+def _download_output_jsonl(
+    *,
+    output_s3_uri: str,
+    local_output_path: Path,
+    region: str,
+    aws_profile: str,
+) -> None:
+    local_output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_aws(
+        ["s3", "cp", output_s3_uri, str(local_output_path)],
+        profile=aws_profile,
+        region=region,
+    )
+
+
+def _run_batch_job(
+    *,
+    settings: HarnessSettings,
+    input_s3_uri: str,
+    input_jsonl_path: Path,
+    output_path: Path,
+    job_name: str,
+) -> list[dict[str, object]]:
+    logger.info(
+        f"execution: submitting Bedrock batch job > model_id={settings.model_id} job_name={job_name}"
+    )
+    job_arn = _create_job(
+        model_id=settings.model_id,
+        role_arn=settings.role_arn,
+        s3_input_uri=input_s3_uri,
+        s3_output_uri=settings.s3_output_uri,
+        job_name=job_name,
+        region=settings.region,
+        aws_profile=settings.aws_profile,
+    )
+    logger.info(
+        f"execution: waiting for Bedrock batch job completion > job_arn={job_arn}"
+    )
+    completed = _wait_for_job(
+        job_arn=job_arn,
+        region=settings.region,
+        poll_seconds=settings.poll_seconds,
+        timeout_seconds=settings.timeout_seconds,
+        aws_profile=settings.aws_profile,
+    )
+    output_cfg = completed.get("outputDataConfig")
+    if not isinstance(output_cfg, dict):
+        raise ValueError("Bedrock get-model-invocation-job missing outputDataConfig.")
+    s3_output_cfg = output_cfg.get("s3OutputDataConfig")
+    if not isinstance(s3_output_cfg, dict):
+        raise ValueError("Bedrock get-model-invocation-job missing s3OutputDataConfig.")
+    s3_output_uri = s3_output_cfg.get("s3Uri")
+    if not isinstance(s3_output_uri, str):
+        raise ValueError("Bedrock get-model-invocation-job missing output s3Uri.")
+    job_id = _job_id_from_arn(job_arn)
+    jsonl_uri = _find_output_jsonl(
+        s3_output_uri=s3_output_uri,
+        region=settings.region,
+        aws_profile=settings.aws_profile,
+        input_jsonl=input_jsonl_path,
+        job_id=job_id,
+    )
+    logger.info(f"execution: downloading Bedrock output jsonl > s3_uri={jsonl_uri}")
+    _download_output_jsonl(
+        output_s3_uri=jsonl_uri,
+        local_output_path=output_path,
+        region=settings.region,
+        aws_profile=settings.aws_profile,
+    )
+    return _load_jsonl(output_path)
+
+
+def _load_jsonl(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as file_obj:
+        for line in file_obj:
+            line_value = line.strip()
+            if not line_value:
+                continue
+            item = json.loads(line_value)
+            if not isinstance(item, dict):
+                raise ValueError("Expected JSON object row in jsonl.")
+            rows.append(item)
+    return rows
+
+
+def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
+    record_id = row.get("recordId")
+    if not isinstance(record_id, str):
+        raise ValueError("Bedrock row missing string recordId.")
+    if "error" in row:
+        error_obj = row.get("error")
+        if isinstance(error_obj, dict):
+            message_obj = error_obj.get("message")
+            if isinstance(message_obj, str):
+                return BatchImportRequest(
+                    request_id=record_id,
+                    payload={"state": "error", "message": message_obj},
+                )
+            error_message_obj = error_obj.get("errorMessage")
+            if isinstance(error_message_obj, str):
+                return BatchImportRequest(
+                    request_id=record_id,
+                    payload={"state": "error", "message": error_message_obj},
+                )
+        raise ValueError(f"Bedrock error row missing error.message/errorMessage: {row}")
+    model_output_obj = row.get("modelOutput")
+    if not isinstance(model_output_obj, dict):
+        raise ValueError("Bedrock row missing modelOutput object.")
+    output_text = _extract_bedrock_output_text(model_output_obj)
+    return BatchImportRequest(
+        request_id=record_id,
+        payload={"state": "completed", "output": output_text},
+    )
+
+
+async def import_results_from_settings(settings: HarnessSettings) -> None:
+    logger.info("execution: importing Bedrock output into quick-agent outcomes")
+    submit_rows = _load_jsonl(settings.submit_requests_jsonl)
+    current_requests: list[BatchSubmitRequest] = []
+    index = 0
+    while index < len(submit_rows):
+        current_requests.append(BatchSubmitRequest.model_validate(submit_rows[index]))
+        index += 1
+    all_submit_requests: list[BatchSubmitRequest] = list(current_requests)
+    root_ids: dict[str, str] = {}
+    root_order: list[str] = []
+    for request in current_requests:
+        root_ids[request.request_id] = request.request_id
+        root_order.append(request.request_id)
+    if not current_requests:
+        raise ValueError("No submit requests found for execution stage.")
+    padding_template: BatchSubmitRequest | None = None
+    for request in current_requests:
+        if request.agent_id == settings.agent:
+            padding_template = request
+            break
+    if padding_template is None:
+        raise ValueError(
+            f"Unable to find padding template request for agent_id={settings.agent}"
+        )
+    registry = AgentRegistry([settings.agents_dir])
+    tools = AgentTools([settings.tools_dir])
+    directory_permissions = DirectoryPermissions(settings.safe_dir)
+    final_outcomes: dict[str, dict[str, object]] = {}
+    all_output_rows: list[dict[str, object]] = []
+    round_index = 1
+    while current_requests:
+        if round_index == 1:
+            rows = _run_batch_job(
+                settings=settings,
+                input_s3_uri=settings.s3_input_uri,
+                input_jsonl_path=settings.input_jsonl,
+                output_path=settings.output_jsonl,
+                job_name=settings.job_name,
+            )
+        else:
+            round_input_name = f"input-round-{round_index}.jsonl"
+            round_input_path = settings.runtime_dir / round_input_name
+            submitted_requests: list[BatchSubmitRequest] = list(current_requests)
+            if len(submitted_requests) < settings.count:
+                logger.info(
+                    f"execution: padding round {round_index} requests from {len(submitted_requests)} to {settings.count}"
+                )
+            while len(submitted_requests) < settings.count:
+                padded_request = padding_template.model_copy(
+                    update={
+                        "request_id": f"{settings.agent}-{uuid4()}",
+                    }
+                )
+                root_ids[padded_request.request_id] = padded_request.request_id
+                submitted_requests.append(padded_request)
+            round_rows: list[dict[str, object]] = []
+            for request in submitted_requests:
+                round_rows.append(request.jsonl_line)
+            write_jsonl(round_input_path, round_rows)
+            bucket, key = _parse_s3_uri(settings.s3_input_uri)
+            key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+            if key_prefix:
+                round_s3_uri = f"s3://{bucket}/{key_prefix}/{round_input_name}"
+            else:
+                round_s3_uri = f"s3://{bucket}/{round_input_name}"
+            logger.info(f"execution: uploading round input > s3_uri={round_s3_uri}")
+            run_aws(
+                ["s3", "cp", str(round_input_path), round_s3_uri],
+                profile=settings.aws_profile,
+                region=settings.region,
+            )
+            round_output_path = (
+                settings.runtime_dir / f"output-round-{round_index}.jsonl"
+            )
+            round_job_name = f"{settings.job_name}-r{round_index}"
+            rows = _run_batch_job(
+                settings=settings,
+                input_s3_uri=round_s3_uri,
+                input_jsonl_path=round_input_path,
+                output_path=round_output_path,
+                job_name=round_job_name,
+            )
+            all_submit_requests.extend(submitted_requests)
+            current_requests = submitted_requests
+        all_output_rows.extend(rows)
+        current_index: dict[str, BatchSubmitRequest] = {}
+        for request in current_requests:
+            current_index[request.request_id] = request
+        next_requests: list[BatchSubmitRequest] = []
+        seen_ids: set[str] = set()
+        row_index = 0
+        while row_index < len(rows):
+            row = rows[row_index]
+            batch_import = _to_import_request(row)
+            submit_request = current_index.get(batch_import.request_id)
+            if submit_request is None:
+                raise ValueError(
+                    f"Missing submit request context for recordId={batch_import.request_id}"
+                )
+            seen_ids.add(batch_import.request_id)
+            context = submit_request.context
+            agent = QuickAgent(
+                registry=registry,
+                tools=tools,
+                directory_permissions=directory_permissions,
+                agent_id=submit_request.agent_id,
+                input_data=TextInput(context.input_text),
+                extra_tools=context.extra_tools,
+            )
+            agent.load_batch_context(context=context)
+            outcome = agent.import_result(batch_import=batch_import)
+            if outcome.next_submit_request is not None:
+                next_request = outcome.next_submit_request
+                root_id = root_ids[submit_request.request_id]
+                root_ids[next_request.request_id] = root_id
+                next_requests.append(next_request)
+            else:
+                root_id = root_ids[submit_request.request_id]
+                final_outcomes[root_id] = outcome.model_dump(mode="json")
+            row_index += 1
+        if len(seen_ids) != len(current_requests):
+            raise ValueError(
+                f"Round {round_index} output row count mismatch: expected={len(current_requests)} actual={len(seen_ids)}"
+            )
+        if next_requests:
+            all_submit_requests.extend(next_requests)
+        current_requests = next_requests
+        round_index += 1
+    ordered_outcomes: list[dict[str, object]] = []
+    for root_id in root_order:
+        outcome_obj = final_outcomes.get(root_id)
+        if outcome_obj is None:
+            raise ValueError(f"Missing final outcome for initial request_id={root_id}")
+        ordered_outcomes.append(outcome_obj)
+    submit_dump_rows: list[dict[str, object]] = []
+    submit_ids: set[str] = set()
+    for request in all_submit_requests:
+        if request.request_id in submit_ids:
+            continue
+        submit_ids.add(request.request_id)
+        submit_dump_rows.append(request.model_dump(mode="json"))
+    write_jsonl(settings.submit_requests_jsonl, submit_dump_rows)
+    write_jsonl(settings.output_jsonl, all_output_rows)
+    write_jsonl(settings.outcomes_jsonl, ordered_outcomes)
+
+
+def run(settings: HarnessSettings) -> None:
+    anyio.run(import_results_from_settings, settings)

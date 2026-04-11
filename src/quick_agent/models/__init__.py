@@ -1,6 +1,11 @@
 """Model types for agent configuration and runtime."""
 
 from quick_agent.models.agent_spec import AgentSpec
+from quick_agent.models.batch_request import BatchImportOutcome
+from quick_agent.models.batch_request import BatchImportRequest
+from quick_agent.models.batch_request import BatchMessage
+from quick_agent.models.batch_request import BatchModelConfig
+from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ContentProcessingSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
@@ -15,6 +20,11 @@ from quick_agent.models.tool_json import ToolJson
 
 __all__ = [
     "AgentSpec",
+    "BatchImportOutcome",
+    "BatchImportRequest",
+    "BatchMessage",
+    "BatchModelConfig",
+    "BatchSubmitRequest",
     "ChainStepSpec",
     "ChunkProcessingSpec",
     "ContentProcessingSpec",

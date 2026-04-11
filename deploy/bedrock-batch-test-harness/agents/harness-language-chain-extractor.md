@@ -1,0 +1,38 @@
+---
+name: "Harness Language Extractor"
+description: "Extract programming languages and technical skills from markdown input."
+model:
+  provider: "openai-compatible"
+  base_url: "http://localhost:11434/v1"
+  model_name: "qwen2.5-7b-4k:latest"
+  temperature: 0.0
+  max_completion_tokens: 256
+schemas:
+  TechKeywords: "schemas.tech_keywords:TechKeywords"
+  RandomName: "schemas.tech_keywords:RandomName"
+chain:
+  - id: generate_random_name
+    kind: structured
+    output_schema: RandomName
+    prompt_section: step:generate_random_name
+  - id: tech_keyword_extraction
+    kind: structured
+    output_schema: TechKeywords
+    prompt_section: step:tech_keyword_extraction
+
+output:
+  format: json
+---
+
+## step:generate_random_name
+
+Generate a random first name.
+Return only valid JSON with this exact shape:
+{"name":"<first_name>"}
+No markdown, no explanation, no extra keys.
+
+## step:tech_keyword_extraction
+
+You extract programming languages and technical skills from candidate writeups.
+Return JSON with keys: computer\_languages (array of strings), databases (array of strings), other (array of strings).
+Use lowercase values and unique entries only.

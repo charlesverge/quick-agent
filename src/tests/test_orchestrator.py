@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 import httpx
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
@@ -27,6 +27,11 @@ from quick_agent.exceptions import (
     QuickAgentToolsNotSupportedException,
 )
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
+from quick_agent.models.batch_request import BatchImportRequest
+from quick_agent.models.batch_request import BatchImportOutcome
+from quick_agent.models.batch_request import BatchMessage
+from quick_agent.models.batch_request import BatchModelConfig
+from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.models.content_processing_spec import (
     ChunkProcessingSpec,
     ContentProcessingSpec,
@@ -245,6 +250,10 @@ class OutputSchema(BaseModel):
     msg: str
 
 
+class OtherSchema(BaseModel):
+    msg: str
+
+
 def _make_loaded_with_chain(
     chain: list[ChainStepSpec],
     *,
@@ -279,6 +288,7 @@ def _make_quick_agent_for_test(
     run_input: RunInput | None = None,
     model: OpenAIChatModel | None = None,
     toolset: FunctionToolset[Any] | None = None,
+    memory: dict[str, Any] | None = None,
     enable_llm_request_logging: bool = False,
     llm_log_path: Path | str | None = None,
 ) -> QuickAgent:
@@ -300,6 +310,7 @@ def _make_quick_agent_for_test(
         model=loaded.spec.model,
         write_output=False,
         record_http_traffic=False,
+        memory=memory,
         enable_llm_request_logging=enable_llm_request_logging,
         llm_log_path=llm_log_path,
     )
@@ -2517,3 +2528,390 @@ async def test_run_nested_agent_respects_nested_output(
     assert kwargs["write_output"] is expected_write_output
     assert kwargs["enable_llm_request_logging"] is True
     assert kwargs["llm_log_path"] == Path("log/custom.log")
+
+
+@pytest.mark.anyio
+async def test_orchestrator_batch_uses_same_arguments_as_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
+    run_input = input_adaptors_module.TextInput("hello")
+    init_recorder = SyncCallRecorder(return_value=None)
+    batch_recorder = SyncCallRecorder(
+        return_value=BatchSubmitRequest(
+            request_id="r1",
+            agent_id="file-manager",
+            step_id=None,
+            step_kind="single_shot",
+            model=BatchModelConfig(
+                provider="openai-compatible", base_url="http://x", model_name="m"
+            ),
+            messages=[BatchMessage(role="user", content="hello")],
+        )
+    )
+    monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
+    monkeypatch.setattr(QuickAgent, "batch", batch_recorder)
+    request = await orch.batch(
+        "file-manager",
+        run_input,
+        record_http_traffic=False,
+        enable_llm_request_logging=False,
+    )
+    assert request.agent_id == "file-manager"
+
+
+@pytest.mark.anyio
+async def test_orchestrator_import_uses_same_arguments_as_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
+    run_input = input_adaptors_module.TextInput("hello")
+    init_recorder = SyncCallRecorder(return_value=None)
+    import_recorder = SyncCallRecorder(
+        return_value=BatchImportOutcome(final_result="ok")
+    )
+    monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
+    monkeypatch.setattr(QuickAgent, "import_results", import_recorder)
+    request = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "completed", "output": "done"},
+    )
+    outcome = await orch.import_results(
+        "file-manager",
+        run_input,
+        request,
+        record_http_traffic=False,
+        enable_llm_request_logging=False,
+    )
+    assert outcome.final_result == "ok"
+
+
+def test_create_batch_request_for_current_step() -> None:
+    qa = _make_quick_agent_for_test()
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system prompt",
+        user_prompt="input prompt",
+        model_settings=qa.model_settings_json,
+    )
+    assert request.agent_id == "a"
+    assert request.step_id == "s1"
+    assert request.step_kind == "text"
+    assert request.model.model_name == qa.model_spec.model_name
+    assert request.messages[0].role == "system"
+    assert request.messages[1].role == "user"
+    assert request.messages[1].content == "input prompt"
+
+
+def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> None:
+    request = BatchSubmitRequest(
+        request_id="r1",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            temperature=0.1,
+            max_completion_tokens=256,
+            extra_body={
+                "inferenceConfig": {"topP": 0.9, "max_new_tokens": 300},
+                "response_format": {"type": "json_schema"},
+                "requestMetadata": {"k": "v"},
+            },
+        ),
+        messages=[
+            BatchMessage(role="system", content="sys"),
+            BatchMessage(role="user", content="hello"),
+        ],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert model_input["response_format"] == {"type": "json_schema"}
+    messages = model_input["messages"]
+    assert isinstance(messages, list)
+    assert messages[0] == {
+        "role": "system",
+        "content": "sys",
+    }
+    assert messages[1] == {
+        "role": "user",
+        "content": "hello",
+    }
+    assert "system" not in model_input
+    inference_config = model_input["inferenceConfig"]
+    assert isinstance(inference_config, dict)
+    assert inference_config["maxTokens"] == 300
+    assert inference_config["temperature"] == 0.1
+    assert inference_config["topP"] == 0.9
+
+
+def test_batch_submit_jsonl_line_uses_converse_model_input_shape() -> None:
+    request = BatchSubmitRequest(
+        request_id="r2",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            temperature=0.1,
+            max_completion_tokens=256,
+            bedrock_request_mode="converse",
+        ),
+        messages=[
+            BatchMessage(role="system", content="sys"),
+            BatchMessage(role="user", content="hello"),
+        ],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert model_input["system"] == [{"type": "text", "text": "sys"}]
+    messages = model_input["messages"]
+    assert isinstance(messages, list)
+    assert messages[0] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "hello"}],
+    }
+
+
+def test_batch_submit_jsonl_line_uses_anthropic_invoke_model_input_shape() -> None:
+    request = BatchSubmitRequest(
+        request_id="r3",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="anthropic_invoke",
+            extra_body={"anthropic_version": "bedrock-2023-05-31"},
+        ),
+        response_format={"type": "json_schema"},
+        messages=[
+            BatchMessage(role="system", content="sys"),
+            BatchMessage(role="user", content="hello"),
+        ],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert model_input["anthropic_version"] == "bedrock-2023-05-31"
+    assert "response_format" not in model_input
+    output_config = model_input["output_config"]
+    assert isinstance(output_config, dict)
+    assert output_config["format"] == {"type": "json_schema"}
+
+
+def test_batch_submit_jsonl_line_inferrs_anthropic_mode_from_model_name() -> None:
+    request = BatchSubmitRequest(
+        request_id="r4",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="anthropic.claude-3-7-sonnet-20250219-v1:0",
+        ),
+        response_format={"type": "json_schema"},
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert "output_config" in model_input
+    assert "response_format" not in model_input
+
+
+def test_batch_submit_jsonl_line_inferrs_qwen_mode_from_model_name() -> None:
+    request = BatchSubmitRequest(
+        request_id="r5",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="qwen.qwen3-next-80b-a3b",
+        ),
+        response_format={"type": "json_schema"},
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert "response_format" in model_input
+    assert "output_config" not in model_input
+
+
+def test_batch_entry_point_returns_submit_request() -> None:
+    qa = _make_quick_agent_for_test()
+    request = qa.batch()
+    assert request.step_id == "s1"
+    assert request.step_kind == "text"
+
+
+def test_batch_structured_step_includes_response_format_for_non_openai() -> None:
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://localhost:11434/v1", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    request = qa.batch()
+    assert request.response_format is not None
+    assert request.response_format["type"] == "json_schema"
+
+
+def test_apply_imported_batch_result_returns_next_request() -> None:
+    qa = _make_quick_agent_for_test()
+    next_request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system prompt",
+        user_prompt="input prompt",
+        model_settings=qa.model_settings_json,
+    )
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={
+            "state": "submit_next",
+            "next_submit_request": next_request.model_dump(mode="json"),
+        },
+    )
+    outcome = qa.import_result(batch_import=batch_import)
+    assert outcome.next_submit_request is not None
+    assert outcome.next_submit_request.request_id == next_request.request_id
+
+
+def test_import_entry_point_returns_outcome() -> None:
+    qa = _make_quick_agent_for_test()
+    qa.loaded.spec.output.format = "markdown"
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "completed", "output": "ok"},
+    )
+    outcome = qa.import_result(batch_import=batch_import)
+    assert outcome.final_result == "ok"
+
+
+def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
+    qa = _make_quick_agent_for_test()
+    qa.loaded.spec.output.output_schema = None
+    qa.loaded.spec.chain = []
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "completed", "output": {"foo": "bar"}},
+    )
+    outcome = qa.import_result(batch_import=batch_import)
+    assert outcome.final_result == {"foo": "bar"}
+
+
+def test_apply_imported_batch_result_maps_tools_not_supported_error() -> None:
+    qa = _make_quick_agent_for_test()
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "error", "message": "model does not support tools"},
+    )
+    with pytest.raises(QuickAgentToolsNotSupportedException):
+        qa.import_result(batch_import=batch_import)
+
+
+def test_import_chain_result_accepts_dict_for_structured_step() -> None:
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "completed", "output": {"x": 5}},
+    )
+    outcome = qa.import_result(batch_import=batch_import)
+    assert outcome.final_result == {"x": 5}
+    assert isinstance(qa.state["steps"]["s1"], ExampleSchema)
+    assert isinstance(qa.state["last_step_output"], ExampleSchema)
+
+
+def test_parse_structured_result_rejects_wrong_basemodel_type() -> None:
+    qa = _make_quick_agent_for_test()
+    with pytest.raises(ValidationError):
+        qa._parse_structured_result(OtherSchema(msg="x"), ExampleSchema)
+
+
+@pytest.mark.anyio
+async def test_run_text_step_uses_batch_call_handler() -> None:
+    async def batch_call(request: BatchSubmitRequest) -> BatchImportRequest:
+        return BatchImportRequest(
+            request_id=request.request_id,
+            payload={"state": "completed", "output": "from batch"},
+        )
+
+    qa = _make_quick_agent_for_test(memory={"batch_call": batch_call})
+    step = qa.loaded.spec.chain[0]
+    output = await qa._run_text_step(step=step)
+    assert output == "from batch"
+
+
+@pytest.mark.anyio
+async def test_run_structured_step_parses_batch_output_with_json_fallback() -> None:
+    async def batch_call(request: BatchSubmitRequest) -> BatchImportRequest:
+        return BatchImportRequest(
+            request_id=request.request_id,
+            payload={"state": "completed", "output": 'prefix {"x": 7} suffix'},
+        )
+
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, memory={"batch_call": batch_call})
+    output = await qa._run_structured_step(step=step)
+    assert isinstance(output, ExampleSchema)
+    assert output.x == 7

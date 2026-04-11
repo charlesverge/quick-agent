@@ -106,9 +106,6 @@ async def _run_single_shot_text_via_pydantic_ai(
     try:
         result = await runner.run(user_prompt, deps=agent._tool_deps())
     except ModelHTTPError as error:
-        mapped_error = agent._map_model_http_error(error)
-        if mapped_error is not None:
-            raise mapped_error from error
         raise error
     agent._capture_pydantic_ai_metrics(result)
     return result.output
@@ -135,9 +132,6 @@ async def _run_single_shot_structured_via_pydantic_ai(
     try:
         result = await runner.run(user_prompt, deps=agent._tool_deps())
     except ModelHTTPError as error:
-        mapped_error = agent._map_model_http_error(error)
-        if mapped_error is not None:
-            raise mapped_error from error
         raise error
     agent._capture_pydantic_ai_metrics(result)
     return _parse_structured_result(result.output, schema_cls)

@@ -6,18 +6,20 @@ import json
 import logging
 import os
 import shlex
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Type, TypeAlias, TypedDict
+from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict
+from uuid import uuid4
 
 import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
 from openai.types import chat
+from openai.types.chat import ChatCompletionSystemMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
 from pydantic import BaseModel, JsonValue, ValidationError
-from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -34,24 +36,31 @@ from quick_agent.exceptions import (
 )
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
-from quick_agent.json_utils import extract_first_json_object
 from quick_agent.mapping.map_chunks import MapChunks
 from quick_agent.mapping.map_paragraphs import MapParagraphs
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
+from quick_agent.models.batch_request import BatchImportOutcome
+from quick_agent.models.batch_request import BatchImportRequest
+from quick_agent.models.batch_request import BatchAgentContext
+from quick_agent.models.batch_request import BatchMessage
+from quick_agent.models.batch_request import BatchModelConfig
+from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
 from quick_agent.samplers.simple_ratios import SampleRatios
-from quick_agent.single_shot import run_single_shot
 from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
 
 logger = logging.getLogger(__name__)
 
 
-StepOutput: TypeAlias = str | dict[str, Any]
+StepOutput: TypeAlias = BaseModel | str | dict[str, Any]
+BatchCallHandler: TypeAlias = Callable[
+    [BatchSubmitRequest], Awaitable[BatchImportRequest] | BatchImportRequest
+]
 
 
 class ChainState(TypedDict):
@@ -230,6 +239,39 @@ class QuickAgent:
         )
         self.last_run_metrics: dict[str, object] | None = None
 
+    def load_batch_context(self, *, context: BatchAgentContext) -> None:
+        state_obj = context.state
+        agent_id_obj = state_obj.get("agent_id")
+        steps_obj = state_obj.get("steps")
+        if not isinstance(agent_id_obj, str) or not isinstance(steps_obj, dict):
+            raise ValueError("Invalid batch context state.")
+        steps: dict[str, StepOutput] = {}
+        for key, value in steps_obj.items():
+            if not isinstance(key, str):
+                raise ValueError(f"Invalid step key type in batch context: {type(key)}")
+            if not isinstance(value, (str, dict)):
+                raise ValueError(
+                    f"Invalid step output type in batch context: {type(value)}"
+                )
+            steps[key] = value
+        last_step_output: str | dict[str, object] | None
+        last_step_output_obj = state_obj.get("last_step_output")
+        if last_step_output_obj is None:
+            last_step_output = None
+        elif isinstance(last_step_output_obj, str):
+            last_step_output = last_step_output_obj
+        elif isinstance(last_step_output_obj, dict):
+            last_step_output = last_step_output_obj
+        else:
+            raise ValueError(
+                f"Invalid last_step_output type in batch context: {type(last_step_output_obj)}"
+            )
+        self.state = {
+            "agent_id": agent_id_obj,
+            "steps": steps,
+            "last_step_output": last_step_output,
+        }
+
     async def run(self) -> AgentResult:
         self.last_run_metrics = None
         if self.has_tools():
@@ -265,6 +307,7 @@ class QuickAgent:
             final_output: AgentResult = last_step_output
             if self.loaded.spec.output.return_compiled_output:
                 final_output = self._compiled_output(last_step_output)
+            final_output = self._finalize_output_contract(final_output)
 
             if self._write_output_file:
                 self._write_last_step_output(final_output)
@@ -511,11 +554,507 @@ class QuickAgent:
     def _build_single_shot_prompt(self) -> str:
         return make_user_prompt(self.run_input, self.state)
 
+    def _build_batch_messages(
+        self,
+        *,
+        instructions: str | None,
+        system_prompt: str | list[str],
+        user_prompt: str,
+    ) -> list[BatchMessage]:
+        messages: list[BatchMessage] = []
+        system_parts: list[str] = []
+        if isinstance(system_prompt, str) and system_prompt:
+            system_parts.append(system_prompt)
+        elif isinstance(system_prompt, list):
+            for item in system_prompt:
+                if isinstance(item, str) and item:
+                    system_parts.append(item)
+        if isinstance(instructions, str) and instructions:
+            system_parts.append(instructions)
+        if system_parts:
+            messages.append(
+                BatchMessage(
+                    role="system",
+                    content="\n".join(system_parts),
+                )
+            )
+        messages.append(BatchMessage(role="user", content=user_prompt))
+        return messages
+
+    def create_batch_request_for_current_step(
+        self,
+        *,
+        step_id: str | None,
+        step_kind: str,
+        output_schema: str | None,
+        instructions: str | None,
+        system_prompt: str | list[str],
+        user_prompt: str,
+        model_settings: ModelSettings | None,
+    ) -> BatchSubmitRequest:
+        response_format: dict[str, JsonValue] | None = None
+        if model_settings is not None:
+            extra_body_obj = model_settings.get("extra_body")
+            if isinstance(extra_body_obj, dict):
+                response_format_obj = extra_body_obj.get("response_format")
+                if isinstance(response_format_obj, dict):
+                    response_format = response_format_obj
+        if response_format is None and output_schema is not None:
+            schema_cls = resolve_schema(self.loaded, output_schema)
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_cls.__name__,
+                    "schema": schema_cls.model_json_schema(),
+                    "strict": True,
+                },
+            }
+        request_id = f"{self._agent_id}-{uuid4()}"
+        state_obj = self._json_compatible_value(self.state)
+        if not isinstance(state_obj, dict):
+            raise ValueError("Expected chain state to be a JSON-compatible object.")
+        state: dict[str, object] = {}
+        for key, value in state_obj.items():
+            state[str(key)] = value
+        return BatchSubmitRequest(
+            request_id=request_id,
+            agent_id=self._agent_id,
+            step_id=step_id,
+            step_kind=step_kind,
+            output_schema=output_schema,
+            model=BatchModelConfig(
+                provider=self.model_spec.provider,
+                base_url=self._effective_base_url(),
+                model_name=self.model_spec.model_name,
+                temperature=self.model_spec.temperature,
+                max_completion_tokens=self.model_spec.max_completion_tokens,
+                extra_headers=self.extra_headers or None,
+                extra_body=self.extra_body or None,
+            ),
+            messages=self._build_batch_messages(
+                instructions=instructions,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            ),
+            response_format=response_format,
+            tool_ids=list(self.tool_ids),
+            context=BatchAgentContext(
+                input_text=self.run_input.text,
+                state=state,
+                safe_dir=self.loaded.spec.safe_dir,
+                extra_tools=list(self._extra_tools or []),
+            ),
+        )
+
+    def batch(self) -> BatchSubmitRequest:
+        if self.loaded.spec.chain:
+            step_index = len(self.state["steps"])
+            if step_index >= len(self.loaded.spec.chain):
+                raise ValueError(
+                    "No remaining chain steps for batch request generation."
+                )
+            step = self.loaded.spec.chain[step_index]
+            step_prompt = self.loaded.step_prompts[step.prompt_section]
+            step_instructions = self._build_step_instructions(step_prompt)
+            model_settings = self.model_settings_json
+            if step.kind == "structured":
+                if not step.output_schema:
+                    raise ValueError(
+                        f"Step {step.id} is structured but missing output_schema."
+                    )
+                schema_cls = resolve_schema(self.loaded, step.output_schema)
+                model_settings = self._build_structured_model_settings(
+                    schema_cls=schema_cls
+                )
+            return self.create_batch_request_for_current_step(
+                step_id=step.id,
+                step_kind=step.kind,
+                output_schema=step.output_schema,
+                instructions=step_instructions,
+                system_prompt=self.loaded.system_prompt,
+                user_prompt=make_user_prompt(self.run_input, self.state),
+                model_settings=model_settings,
+            )
+
+        single_schema = self.loaded.spec.output.output_schema
+        model_settings = self.model_settings_json
+        if single_schema is not None:
+            schema_cls = resolve_schema(self.loaded, single_schema)
+            model_settings = self._build_structured_model_settings(
+                schema_cls=schema_cls
+            )
+        return self.create_batch_request_for_current_step(
+            step_id=None,
+            step_kind="single_shot",
+            output_schema=single_schema,
+            instructions=self.loaded.instructions,
+            system_prompt=self.loaded.system_prompt,
+            user_prompt=self._build_single_shot_prompt(),
+            model_settings=model_settings,
+        )
+
+    def _import_outcome(
+        self, *, batch_import: BatchImportRequest
+    ) -> BatchImportOutcome:
+        payload = batch_import.payload
+        state_obj = payload.get("state")
+        if not isinstance(state_obj, str):
+            raise ValueError("Batch import payload is missing string field 'state'.")
+        if state_obj == "error":
+            message_obj = payload.get("message")
+            if not isinstance(message_obj, str):
+                raise ValueError(
+                    "Error batch payload is missing string field 'message'."
+                )
+            mapped_error = self._map_model_error_message(message_obj)
+            if mapped_error is not None:
+                raise mapped_error
+            raise ValueError(message_obj)
+        if state_obj == "completed":
+            if "output" not in payload:
+                raise ValueError("Completed batch payload is missing 'output'.")
+            return BatchImportOutcome(
+                final_result=self._as_agent_result(payload["output"])
+            )
+        if state_obj == "submit_next":
+            next_request_obj = payload.get("next_submit_request")
+            if not isinstance(next_request_obj, dict):
+                raise ValueError(
+                    "submit_next batch payload is missing object field 'next_submit_request'."
+                )
+            next_submit_request = BatchSubmitRequest.model_validate(next_request_obj)
+            return BatchImportOutcome(next_submit_request=next_submit_request)
+        raise ValueError(f"Unsupported batch import state: {state_obj}")
+
+    def _as_agent_result(self, value: object) -> AgentResult:
+        if isinstance(value, BaseModel):
+            return value
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            result: dict[str, object] = {}
+            for key, item in value.items():
+                result[str(key)] = item
+            return result
+        if isinstance(value, list):
+            items: list[AgentResult] = []
+            index = 0
+            while index < len(value):
+                items.append(self._as_agent_result(value[index]))
+                index += 1
+            return items
+        raise ValueError(f"Unsupported completed batch output type: {type(value)}")
+
+    def import_result(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
+        outcome = self._import_outcome(batch_import=batch_import)
+        if outcome.next_submit_request is not None:
+            return outcome
+        raw_result = outcome.final_result
+        if raw_result is None:
+            raise ValueError("Batch import outcome did not include a final result.")
+        result_outcome = (
+            self._import_chain_result(raw_result)
+            if self.loaded.spec.chain
+            else self._import_single_shot_result(raw_result)
+        )
+        final_result = result_outcome.final_result
+        if final_result is None:
+            raise ValueError("Import result did not produce a final output.")
+        finalized = self._finalize_output_contract(final_result)
+        if self._write_output_file:
+            self._write_last_step_output(finalized)
+        return BatchImportOutcome(final_result=finalized)
+
+    def _import_single_shot_result(self, raw_result: AgentResult) -> BatchImportOutcome:
+        schema_name = self.loaded.spec.output.output_schema
+        step_kind = "text" if schema_name is None else "structured"
+        parsed = self._parse_import_result(
+            raw_result=raw_result,
+            step_kind=step_kind,
+            output_schema=schema_name,
+            step_id=None,
+        )
+        return BatchImportOutcome(final_result=parsed)
+
+    def _import_chain_result(self, raw_result: AgentResult) -> BatchImportOutcome:
+        chain = self.loaded.spec.chain
+        step_index = len(self.state["steps"])
+        if step_index >= len(chain):
+            raise ValueError("No remaining chain steps for imported batch result.")
+        step = chain[step_index]
+        parsed_obj = self._parse_import_result(
+            raw_result=raw_result,
+            step_kind=step.kind,
+            output_schema=step.output_schema,
+            step_id=step.id,
+        )
+        parsed: BaseModel | str
+        if step.kind == "structured":
+            if not isinstance(parsed_obj, BaseModel):
+                raise ValueError(
+                    f"Structured step {step.id} did not return a BaseModel output."
+                )
+            parsed = parsed_obj
+        else:
+            if not isinstance(parsed_obj, str):
+                raise ValueError(f"Text step {step.id} did not return a string output.")
+            parsed = parsed_obj
+        self.state["steps"][step.id] = parsed
+        self.state["last_step_output"] = parsed
+        next_index = step_index + 1
+        if next_index < len(chain):
+            next_step = chain[next_index]
+            next_prompt = self.loaded.step_prompts[next_step.prompt_section]
+            next_instructions = self._build_step_instructions(next_prompt)
+            next_model_settings = self.model_settings_json
+            if next_step.kind == "structured":
+                if not next_step.output_schema:
+                    raise ValueError(
+                        f"Step {next_step.id} is structured but missing output_schema."
+                    )
+                next_schema_cls = resolve_schema(self.loaded, next_step.output_schema)
+                next_model_settings = self._build_structured_model_settings(
+                    schema_cls=next_schema_cls
+                )
+            next_request = self.create_batch_request_for_current_step(
+                step_id=next_step.id,
+                step_kind=next_step.kind,
+                output_schema=next_step.output_schema,
+                instructions=next_instructions,
+                system_prompt=self.loaded.system_prompt,
+                user_prompt=make_user_prompt(self.run_input, self.state),
+                model_settings=next_model_settings,
+            )
+            return BatchImportOutcome(next_submit_request=next_request)
+        final_result: AgentResult
+        if self.loaded.spec.output.return_compiled_output:
+            final_result = self._compiled_output(parsed)
+        else:
+            final_result = parsed
+        return BatchImportOutcome(final_result=final_result)
+
+    def _parse_import_result(
+        self,
+        *,
+        raw_result: AgentResult,
+        step_kind: str,
+        output_schema: str | None,
+        step_id: str | None,
+    ) -> AgentResult:
+        if step_kind == "text":
+            if not isinstance(raw_result, str):
+                if step_id is None and isinstance(raw_result, dict):
+                    return raw_result
+                if step_id is None:
+                    raise ValueError("Single-shot text output must be a string.")
+                raise ValueError(f"Text step {step_id} expected a string output.")
+            return raw_result
+        if step_kind == "structured":
+            if not output_schema:
+                if step_id is None:
+                    raise ValueError("Structured output is missing output_schema.")
+                raise ValueError(
+                    f"Step {step_id} is structured but missing output_schema."
+                )
+            if not isinstance(raw_result, (BaseModel, str, dict)):
+                if step_id is None:
+                    raise ValueError(
+                        "Structured output expected BaseModel, JSON string, or object output."
+                    )
+                raise ValueError(
+                    f"Structured step {step_id} expected BaseModel, JSON string, or object output."
+                )
+            schema_cls = resolve_schema(self.loaded, output_schema)
+            return self._parse_structured_result(raw_result, schema_cls)
+        raise ValueError(f"Unsupported import step kind: {step_kind}")
+
+    def _finalize_output_contract(self, output: AgentResult) -> AgentResult:
+        output_schema = self.loaded.spec.output.output_schema
+        output_format = self.loaded.spec.output.format
+        if output_schema is not None:
+            schema_cls = resolve_schema(self.loaded, output_schema)
+            if isinstance(output, BaseModel):
+                if isinstance(output, schema_cls):
+                    return output
+                payload = output.model_dump(mode="json")
+                return schema_cls.model_validate(payload)
+            if isinstance(output, (str, dict)):
+                return self._parse_structured_result(output, schema_cls)
+            raise ValueError("Structured output requires schema-compatible result.")
+        if output_format == "json":
+            if isinstance(output, BaseModel):
+                return output.model_dump(mode="json")
+            if isinstance(output, dict):
+                return output
+            if isinstance(output, str):
+                parsed = json.loads(output)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON output must be a JSON object.")
+                return parsed
+            raise ValueError("JSON output requires a JSON object result.")
+        if output_format == "markdown":
+            if not isinstance(output, str):
+                raise ValueError("Text output must be a string.")
+            return output
+        if output_format == "structured":
+            if not isinstance(output, BaseModel):
+                raise ValueError("Structured output requires a BaseModel result.")
+            return output
+        if not isinstance(output, str):
+            raise ValueError("Text output must be a string.")
+        return output
+
+    def _map_model_error_message(self, message: str) -> QuickAgentException | None:
+        if "does not support tools" in message:
+            return QuickAgentToolsNotSupportedException(
+                model_name=self.model_spec.model_name,
+                message=message,
+            )
+        if "does not support chat" in message:
+            return QuickAgentChatNotSupportedException(
+                model_name=self.model_spec.model_name,
+                message=message,
+            )
+        return None
+
+    async def _call_batch_handler(
+        self, batch_request: BatchSubmitRequest
+    ) -> BatchImportRequest:
+        handler_obj = self._memory.get("batch_call")
+        if handler_obj is None:
+            return await self._local_batch_call(batch_request)
+        if not callable(handler_obj):
+            raise ValueError("memory['batch_call'] must be callable when provided.")
+        response = handler_obj(batch_request)
+        if isinstance(response, BatchImportRequest):
+            return response
+        if inspect.isawaitable(response):
+            awaited = await response
+            if isinstance(awaited, BatchImportRequest):
+                return awaited
+            return BatchImportRequest.model_validate(awaited)
+        return BatchImportRequest.model_validate(response)
+
+    async def _local_batch_call(
+        self, batch_request: BatchSubmitRequest
+    ) -> BatchImportRequest:
+        api_key = os.environ.get(self.model_spec.api_key_env, "noop")
+        timeout_seconds = self.model_spec.timeout_seconds
+        client = self.client or openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url=self.model_spec.base_url,
+            timeout=timeout_seconds,
+            http_client=self._http_client,
+        )
+        messages: list[chat.ChatCompletionMessageParam] = []
+        for batch_message in batch_request.messages:
+            if batch_message.role == "system":
+                system_message: ChatCompletionSystemMessageParam = {
+                    "role": "system",
+                    "content": batch_message.content,
+                }
+                messages.append(system_message)
+                continue
+            user_message: ChatCompletionUserMessageParam = {
+                "role": "user",
+                "content": batch_message.content,
+            }
+            messages.append(user_message)
+        extra_body: dict[str, JsonValue] | None = None
+        if self.model_settings_json is not None:
+            extra_body_obj = self.model_settings_json.get("extra_body")
+            if isinstance(extra_body_obj, dict):
+                extra_body = extra_body_obj
+        if batch_request.response_format is not None:
+            if extra_body is None:
+                extra_body = {}
+            extra_body["response_format"] = batch_request.response_format
+        try:
+            response = await client.chat.completions.create(
+                model=batch_request.model.model_name,
+                messages=messages,
+                temperature=batch_request.model.temperature,
+                max_completion_tokens=batch_request.model.max_completion_tokens,
+                extra_body=extra_body,
+            )
+        except openai.APIStatusError as error:
+            body_obj = error.body
+            error_message = str(error)
+            if isinstance(body_obj, dict):
+                body_message = body_obj.get("message")
+                if isinstance(body_message, str):
+                    error_message = body_message
+            elif isinstance(body_obj, str):
+                error_message = body_obj
+            mapped_error = self._map_model_error_message(error_message)
+            if mapped_error is not None:
+                raise mapped_error from error
+            raise
+        self._capture_openai_sdk_metrics(response)
+        if not response.choices:
+            raise ValueError("Model returned no completion choices.")
+        message_obj = response.choices[0].message
+        content_obj = message_obj.content
+        if not content_obj:
+            refusal_obj = message_obj.refusal
+            if refusal_obj:
+                raise ValueError(f"Model refused response: {refusal_obj}")
+            raise ValueError("Model returned an empty response.")
+        return BatchImportRequest(
+            request_id=batch_request.request_id,
+            provider_job_id=getattr(response, "id", None),
+            payload={
+                "state": "completed",
+                "output": content_obj,
+            },
+        )
+
+    def _parse_structured_result(
+        self, raw_output: object, schema_cls: Type[BaseModel]
+    ) -> BaseModel:
+        if isinstance(raw_output, BaseModel):
+            if isinstance(raw_output, schema_cls):
+                return raw_output
+            payload = raw_output.model_dump(mode="json")
+            return schema_cls.model_validate(payload)
+        if isinstance(raw_output, str):
+            return schema_cls.model_validate_json(raw_output)
+        return schema_cls.model_validate(raw_output)
+
+    async def _execute_batch_request(
+        self, *, batch_request: BatchSubmitRequest, schema_cls: Type[BaseModel] | None
+    ) -> BaseModel | str:
+        if self.has_tools():
+            raise QuickAgentToolsNotSupportedException(
+                model_name=self.model_spec.model_name,
+                message=(
+                    "Batch tool-calling loop is not enabled in this phase. "
+                    "Submit/import generation works for non-tool steps."
+                ),
+            )
+        request = batch_request
+        while True:
+            batch_import = await self._call_batch_handler(request)
+            outcome = self._import_outcome(batch_import=batch_import)
+            if outcome.next_submit_request is not None:
+                request = outcome.next_submit_request
+                continue
+            raw_result = outcome.final_result
+            if raw_result is None:
+                raise ValueError("Batch import outcome did not include a final result.")
+            if schema_cls is None:
+                if isinstance(raw_result, str):
+                    return raw_result
+                raise ValueError("Text step expected a string output.")
+            return self._parse_structured_result(raw_result, schema_cls)
+
     def _json_compatible_value(self, value: object) -> object:
         if value is None:
             return None
         if isinstance(value, (str, int, float, bool)):
             return value
+        if isinstance(value, BaseModel):
+            return self._json_compatible_value(value.model_dump(mode="json"))
         if isinstance(value, dict):
             converted: dict[str, object] = {}
             for key, item in value.items():
@@ -662,27 +1201,6 @@ class QuickAgent:
                 prefix,
                 self._llm_log_path,
             )
-
-    def _map_model_http_error(
-        self, error: ModelHTTPError
-    ) -> QuickAgentException | None:
-        body = error.body
-        message = ""
-        if isinstance(body, dict):
-            body_message = body.get("message")
-            if isinstance(body_message, str):
-                message = body_message
-        elif isinstance(body, str):
-            message = body
-        if "does not support tools" in message:
-            return QuickAgentToolsNotSupportedException(
-                model_name=error.model_name, message=message
-            )
-        if "does not support chat" in message:
-            return QuickAgentChatNotSupportedException(
-                model_name=error.model_name, message=message
-            )
-        return None
 
     def _decode_http_bytes(self, value: bytes) -> str:
         try:
@@ -833,15 +1351,6 @@ class QuickAgent:
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
-        toolsets = self._toolsets_for_run()
-        agent = Agent(
-            self.model,
-            instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
-            toolsets=toolsets,
-            output_type=str,
-            model_settings=self.model_settings_json,
-        )
         self._record_llm_request(
             call_site="run_text_step",
             step_id=step.id,
@@ -858,15 +1367,22 @@ class QuickAgent:
             self.model_spec.model_name,
             step.id,
         )
-        try:
-            result = await agent.run(user_prompt, deps=self._tool_deps())
-        except ModelHTTPError as error:
-            mapped_error = self._map_model_http_error(error)
-            if mapped_error is not None:
-                raise mapped_error from error
-            raise error
-        self._capture_pydantic_ai_metrics(result)
-        return result.output
+        batch_request = self.create_batch_request_for_current_step(
+            step_id=step.id,
+            step_kind=step.kind,
+            output_schema=step.output_schema,
+            instructions=step_instructions,
+            system_prompt=self.loaded.system_prompt,
+            user_prompt=user_prompt,
+            model_settings=self.model_settings_json,
+        )
+        output = await self._execute_batch_request(
+            batch_request=batch_request,
+            schema_cls=None,
+        )
+        if not isinstance(output, str):
+            raise ValueError("Text step expected a string output.")
+        return output
 
     async def _run_single_shot(self) -> BaseModel | str:
         prefix = "QuickAgent._run_single_shot"
@@ -875,7 +1391,37 @@ class QuickAgent:
         if schema_name:
             schema_cls = resolve_schema(self.loaded, schema_name)
         logger.info("%s: model=%s > Calling model", prefix, self.model_spec.model_name)
-        return await run_single_shot(self, schema_cls=schema_cls)
+        user_prompt = self._build_single_shot_prompt()
+        instructions = self.loaded.instructions
+        system_prompt = self.loaded.system_prompt
+        model_settings = self.model_settings_json
+        if schema_cls is not None:
+            model_settings = self._build_structured_model_settings(
+                schema_cls=schema_cls
+            )
+        self._record_llm_request(
+            call_site="run_single_shot",
+            step_id=None,
+            step_kind="single_shot",
+            output_schema=self.loaded.spec.output.output_schema,
+            instructions=instructions,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
+        batch_request = self.create_batch_request_for_current_step(
+            step_id=None,
+            step_kind="single_shot",
+            output_schema=self.loaded.spec.output.output_schema,
+            instructions=instructions,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
+        return await self._execute_batch_request(
+            batch_request=batch_request,
+            schema_cls=schema_cls,
+        )
 
     async def _run_structured_step(
         self,
@@ -892,16 +1438,6 @@ class QuickAgent:
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
-        model_settings = self._build_structured_model_settings(schema_cls=schema_cls)
-        toolsets = self._toolsets_for_run()
-        agent = Agent(
-            self.model,
-            instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
-            toolsets=toolsets,
-            output_type=schema_cls,
-            model_settings=model_settings,
-        )
         self._record_llm_request(
             call_site="run_structured_step",
             step_id=step.id,
@@ -919,26 +1455,22 @@ class QuickAgent:
             step.id,
             step.output_schema,
         )
-        try:
-            result = await agent.run(user_prompt, deps=self._tool_deps())
-        except ModelHTTPError as error:
-            mapped_error = self._map_model_http_error(error)
-            if mapped_error is not None:
-                raise mapped_error from error
-            raise error
-        self._capture_pydantic_ai_metrics(result)
-        raw_output = result.output
-        if isinstance(raw_output, BaseModel):
-            parsed = raw_output
-        elif isinstance(raw_output, dict):
-            parsed = schema_cls.model_validate(raw_output)
-        else:
-            try:
-                parsed = schema_cls.model_validate_json(raw_output)
-            except ValidationError:
-                extracted = extract_first_json_object(raw_output)
-                parsed = schema_cls.model_validate_json(extracted)
-        return parsed
+        batch_request = self.create_batch_request_for_current_step(
+            step_id=step.id,
+            step_kind=step.kind,
+            output_schema=step.output_schema,
+            instructions=step_instructions,
+            system_prompt=self.loaded.system_prompt,
+            user_prompt=user_prompt,
+            model_settings=model_settings,
+        )
+        output = await self._execute_batch_request(
+            batch_request=batch_request,
+            schema_cls=schema_cls,
+        )
+        if not isinstance(output, BaseModel):
+            raise ValueError("Structured step expected a structured output.")
+        return output
 
     async def _run_chain(
         self,

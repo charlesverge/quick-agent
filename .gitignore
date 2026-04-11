@@ -216,3 +216,9 @@ out
 .python-version
 AGENTS.md
 
+*.hcl
+.terraform*
+*.credentials
+*.tfstate
+*.tfstate.*
+

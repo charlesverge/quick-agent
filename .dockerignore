@@ -1,0 +1,76 @@
+**/.DS_Store
+**/*.log
+**/__pycache__
+# Byte-compiled / optimized / DLL files
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+**/*.txt
+# C extensions
+**/*.so
+
+# Distribution / packaging
+**/.Python
+**/env/
+**/build/
+**/develop-eggs/
+**/dist/
+**/downloads/
+**/eggs/
+**/lib/
+**/lib64/
+**/parts/
+**/sdist/
+**/var/
+**/*.egg-info
+**/.installed.cfg
+**/*.egg
+
+# Virtual environments
+**/.venv
+**/venv/
+**/ENV/
+
+# Unit test / coverage reports
+**/htmlcov/
+**/.tox/
+**/.nosetests
+**/.coverage
+**/.coverage.*
+**/.cache
+**/nosetests.xml
+**/coverage.xml
+**/*.cover
+**/.pytest_cache/
+
+# Sensitive data & secrets
+secrets.json
+*.key
+*.pem
+
+# Git history and local IDE settings
+.git
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker-specific (ignore the ignore files themselves)
+**/Dockerfile
+**/.dockerignore
+**/docker-compose*.yml
+**/.ruff_cache
+**/.env*
+**/.github
+**/old
+**/.vscode
+**/.mypy_cache
+**/tests
+**/test_*
+**/specifications
+**/build/
+**/vendor/
+
+**/*.tar.gz
+**/*.whl

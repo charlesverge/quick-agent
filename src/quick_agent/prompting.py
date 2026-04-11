@@ -5,8 +5,25 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import yaml
+from pydantic import BaseModel
 
 from quick_agent.models.run_input import RunInput
+
+
+def _yaml_compatible(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return _yaml_compatible(value.model_dump(mode="json"))
+    if isinstance(value, dict):
+        result_dict: dict[str, object] = {}
+        for key, item in value.items():
+            result_dict[str(key)] = _yaml_compatible(item)
+        return result_dict
+    if isinstance(value, list):
+        result_list: list[object] = []
+        for item in value:
+            result_list.append(_yaml_compatible(item))
+        return result_list
+    return value
 
 
 def make_user_prompt(run_input: RunInput, state: Mapping[str, Any]) -> str:
@@ -35,8 +52,9 @@ def make_user_prompt(run_input: RunInput, state: Mapping[str, Any]) -> str:
     lines.append(run_input.text)
 
     if has_state:
+        steps_payload = _yaml_compatible(steps_state)
         state_yaml = yaml.safe_dump(
-            steps_state,
+            steps_payload,
             allow_unicode=False,
             default_flow_style=False,
             sort_keys=True,

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from quick_agent.input_adaptors import InputAdaptor, TextInput
+from quick_agent.models.batch_request import BatchImportRequest
 from quick_agent.orchestrator import Orchestrator
 from quick_agent.types import AgentResult
 
@@ -28,11 +30,28 @@ def main() -> None:
     parser.add_argument("--tools-dir", type=str, default="tools")
     parser.add_argument("--safe-dir", type=str, default="safe")
     parser.add_argument("--agent", type=str, required=True)
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--batch", action="store_true", help="Output one batch request payload"
+    )
+    mode_group.add_argument(
+        "--import",
+        dest="import_path",
+        type=str,
+        help="Path to a BatchImportRequest JSON file",
+    )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--input", type=str, help="Path to an input file")
     input_group.add_argument("--input-text", type=str, help="Raw input text")
-    parser.add_argument("--tool", action="append", default=[], help="Extra tool IDs to add at runtime")
-    parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument(
+        "--tool", action="append", default=[], help="Extra tool IDs to add at runtime"
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -62,7 +81,21 @@ def main() -> None:
     # Async entrypoint
     import anyio
 
-    out = anyio.run(run_agent, orch, args.agent, input_adaptor, args.tool)
+    out: object
+    if args.batch:
+        out = anyio.run(orch.batch, args.agent, input_adaptor, args.tool)
+    elif args.import_path is not None:
+        import_json = Path(args.import_path).read_text(encoding="utf-8")
+        batch_import = BatchImportRequest.model_validate(json.loads(import_json))
+        out = anyio.run(
+            orch.import_results,
+            args.agent,
+            input_adaptor,
+            batch_import,
+            args.tool,
+        )
+    else:
+        out = anyio.run(run_agent, orch, args.agent, input_adaptor, args.tool)
     if isinstance(out, BaseModel):
         print(out.model_dump_json(indent=2))
     else:
