@@ -26,11 +26,10 @@ from openai.types.chat import (
 from openai.types.shared_params.function_definition import FunctionDefinition
 from pydantic import BaseModel, JsonValue
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.profiles.openai import OpenAIModelProfile
-from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
+from quick_agent.agent_model_utils import build_model, resolve_schema
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
@@ -40,7 +39,7 @@ from quick_agent.exceptions import (
     QuickAgentToolsNotSupportedException,
 )
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
-from quick_agent.io_utils import write_output
+from quick_agent.io_utils import write_output as write_text
 from quick_agent.json_utils import extract_first_json_object, json_compatible_value
 from quick_agent.mapping.map_chunks import MapChunks
 from quick_agent.mapping.map_paragraphs import MapParagraphs
@@ -57,10 +56,10 @@ from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
+from quick_agent.output import write_output
 from quick_agent.prompting import make_user_prompt
-from quick_agent.recorder import ExecutionLogEntry, Recorder
+from quick_agent.recorder import Recorder
 from quick_agent.samplers.simple_ratios import SampleRatios
-from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
 
 logger = logging.getLogger(__name__)
@@ -224,7 +223,10 @@ class QuickAgent:
         chunk_output = await self._apply_chunk_processing()
         if chunk_output is not None:
             if self._write_output_file:
-                self._write_last_step_output(chunk_output)
+                output_file = self.loaded.spec.output.file
+                if output_file is None:
+                    raise ValueError("Output file is not configured.")
+                write_output(output_file, chunk_output, self.permissions)
             handoff_output = await self._handle_handoff(chunk_output)
             if handoff_output is not None:
                 return handoff_output
@@ -232,7 +234,10 @@ class QuickAgent:
         if self._is_empty_agent_body():
             output: AgentResult = self.run_input.text
             if self._write_output_file:
-                self._write_last_step_output(output)
+                output_file = self.loaded.spec.output.file
+                if output_file is None:
+                    raise ValueError("Output file is not configured.")
+                write_output(output_file, output, self.permissions)
             handoff_output = await self._handle_handoff(output)
             if handoff_output is not None:
                 return handoff_output
@@ -247,7 +252,10 @@ class QuickAgent:
             final_output = self._finalize_output_contract(final_output)
 
             if self._write_output_file:
-                self._write_last_step_output(final_output)
+                output_file = self.loaded.spec.output.file
+                if output_file is None:
+                    raise ValueError("Output file is not configured.")
+                write_output(output_file, final_output, self.permissions)
 
             handoff_output = await self._handle_handoff(last_step_output)
             if handoff_output is not None:
@@ -267,7 +275,7 @@ class QuickAgent:
         self.run_input = self.run_input.model_copy(update={"text": sample_result})
         debug_output_file = content_processing.sample.debug_output_file
         if debug_output_file:
-            write_output(Path(debug_output_file), sample_result, self.permissions)
+            write_text(Path(debug_output_file), sample_result, self.permissions)
 
     async def _apply_chunk_processing(self) -> list[AgentResult] | None:
         content_processing = self.loaded.spec.content_processing
@@ -737,7 +745,10 @@ class QuickAgent:
             raise ValueError("Import result did not produce output.")
         finalized = self._finalize_output_contract(result)
         if self._write_output_file:
-            self._write_last_step_output(finalized)
+            output_file = self.loaded.spec.output.file
+            if output_file is None:
+                raise ValueError("Output file is not configured.")
+            write_output(output_file, finalized, self.permissions)
         return BatchImportOutcome(
             result=finalized,
             next_request=result_outcome.next_request,
@@ -1588,20 +1599,6 @@ class QuickAgent:
     def memory(self, memory: dict[str, Any]) -> None:
         self._memory = memory
 
-    def _write_last_step_output(self, last_step_output: AgentResult) -> Path:
-        output_file = self.loaded.spec.output.file
-        if not output_file:
-            raise ValueError("Output file is not configured.")
-        out_path = Path(output_file)
-        if isinstance(last_step_output, BaseModel):
-            text = last_step_output.model_dump_json(indent=2)
-        elif isinstance(last_step_output, (dict, list)):
-            text = json.dumps(last_step_output, indent=2)
-        else:
-            text = str(last_step_output)
-        write_output(out_path, text, self.permissions)
-        return out_path
-
     async def _handle_handoff(
         self, last_step_output: AgentResult
     ) -> AgentResult | None:
@@ -1618,79 +1615,3 @@ class QuickAgent:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Ollama-safe model subclass: patches content=None → content="" in assistant
-# messages to work around Ollama rejecting null content as <nil>.
-# See docs/tool_mode.md for detailed reasoning.
-# ---------------------------------------------------------------------------
-class OllamaSafeChatModel(OpenAIChatModel):
-    """OpenAIChatModel that replaces content=None with content='' in assistant
-    messages, preventing Ollama's 'invalid message content type: <nil>' error."""
-
-    @dataclass
-    class _MapModelResponseContext(OpenAIChatModel._MapModelResponseContext):
-        def _into_message_param(self) -> ChatCompletionAssistantMessageParam:
-            message_param = super()._into_message_param()
-            if message_param.get("content") is None:
-                message_param["content"] = ""
-            return message_param
-
-
-def resolve_schema(loaded: LoadedAgentFile, schema_name: str) -> Type[BaseModel]:
-    if schema_name not in loaded.spec.schemas:
-        raise KeyError(f"Schema {schema_name!r} not registered in agent.md schemas.")
-    cls = import_symbol(loaded.spec.schemas[schema_name])
-    if not isinstance(cls, type) or not issubclass(cls, BaseModel):
-        raise TypeError(
-            f"Schema {schema_name!r} must be a Pydantic BaseModel subclass."
-        )
-    return cls
-
-
-def build_model(
-    model_spec: ModelSpec,
-    *,
-    http_client: httpx.AsyncClient | None = None,
-    client: openai.AsyncOpenAI | None = None,
-    tool_mode: str = "default",
-) -> OpenAIChatModel:
-    api_key = os.environ.get(model_spec.api_key_env, "noop")
-    provider = (
-        OpenAIProvider(openai_client=client)
-        if client is not None
-        else OpenAIProvider(
-            base_url=model_spec.base_url, api_key=api_key, http_client=http_client
-        )
-    )
-    profile = _build_model_profile(tool_mode)
-    logger.info(f"build_model {tool_mode}")
-
-    model_cls: type[OpenAIChatModel] = OpenAIChatModel
-    if tool_mode in ("with_tools", "no_tools"):
-        model_cls = OllamaSafeChatModel
-    if profile is not None:
-        return model_cls(model_spec.model_name, provider=provider, profile=profile)
-    return model_cls(model_spec.model_name, provider=provider)
-
-
-def _build_model_profile(
-    tool_mode: str,
-) -> OpenAIModelProfile | None:
-    """Build an OpenAIModelProfile based on the tool_mode setting.
-
-    - default: no custom profile (pydantic_ai defaults).
-    - no_tools: prompted structured output, avoids tool calling entirely.
-    - with_tools: standard tool mode with OllamaSafeChatModel subclass.
-    - prompted_tools: prompted structured output with tools (experimental).
-    """
-    if tool_mode in ("no_tools", "prompted_tools"):
-        return OpenAIModelProfile(
-            openai_supports_strict_tool_definition=False,
-            default_structured_output_mode="prompted",
-            supports_json_object_output=True,
-        )
-    if tool_mode == "with_tools":
-        return OpenAIModelProfile(
-            openai_supports_strict_tool_definition=False,
-        )
-    return None

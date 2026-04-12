@@ -44,14 +44,15 @@ from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.orchestrator import Orchestrator
+from quick_agent.output import write_output
 from quick_agent.prompting import make_user_prompt
 from quick_agent.quick_agent import (
-    ExecutionLogEntry,
     QuickAgent,
     ToolCallResult,
     build_model,
     resolve_schema,
 )
+from quick_agent.recorder import ExecutionLogEntry
 
 
 class DummyProvider:
@@ -1437,7 +1438,7 @@ def test_apply_sample_processing_writes_debug_output(
         data=None,
     )
     write_output_recorder = SyncCallRecorder(return_value=None)
-    monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
+    monkeypatch.setattr(qa_module, "write_text_output", write_output_recorder)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
 
     qa._apply_sample_processing()
@@ -2325,7 +2326,11 @@ def test_write_last_step_output_serializes_model(tmp_path: Path) -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
-    result_path = qa._write_last_step_output(OutputSchema(msg="hi"))
+    result_path = write_output(
+        qa.loaded.spec.output.file,
+        OutputSchema(msg="hi"),
+        permissions,
+    )
 
     assert result_path == out_path
     assert '"msg": "hi"' in out_path.read_text(encoding="utf-8")
@@ -2342,7 +2347,11 @@ def test_write_last_step_output_writes_text(tmp_path: Path) -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
-    result_path = qa._write_last_step_output("hello")
+    result_path = write_output(
+        qa.loaded.spec.output.file,
+        "hello",
+        permissions,
+    )
 
     assert result_path == out_path
     assert out_path.read_text(encoding="utf-8") == "hello"
