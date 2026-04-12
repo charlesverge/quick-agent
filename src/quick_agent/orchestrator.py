@@ -105,4 +105,4 @@ class Orchestrator:
             llm_log_path=llm_log_path,
             client=client,
         )
-        return agent.import_result(batch_import=batch_import)
+        return await agent.import_result(batch_import=batch_import)

@@ -24,15 +24,15 @@ output:
   format: json
 ---
 
-## step:generate_random_name
+## step:generate\_random\_name
 
 Generate a random first name.
 Return only valid JSON with this exact shape:
-{"name":"<first_name>"}
+{"name":"\<first\_name>"}
 No markdown, no explanation, no extra keys.
 
-## step:tech_keyword_extraction
+## step:tech\_keyword\_extraction
 
 You extract programming languages and technical skills from candidate writeups.
-Return JSON with keys: computer\_languages (array of strings), databases (array of strings), other (array of strings).
+Return JSON with keys: `computer_languages` (array of strings), `databases` (array of strings), `other` (array of strings).
 Use lowercase values and unique entries only.

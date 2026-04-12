@@ -41,10 +41,7 @@ class AgentCallTool:
         input_file: str | None = None,
         input_text: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Call another agent by ID with an input file path or inline text.
-        Returns a BatchImportRequest-compatible payload with state and output.
-        """
+        """Call another agent by ID with an input file path or inline text."""
         if input_file and input_text:
             raise ValueError("Provide only one of input_file or input_text.")
         if not input_file and input_text is None:
@@ -58,10 +55,5 @@ class AgentCallTool:
             input_data = resolved_input
         out = await self._call_agent(agent, input_data)
         if isinstance(out, BaseModel):
-            output = out.model_dump()
-        else:
-            output = {"text": out}
-        return {
-            "state": "completed",
-            "output": output,
-        }
+            return out.model_dump()
+        return {"text": out}

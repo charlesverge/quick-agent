@@ -506,7 +506,7 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                     provider_job_id=batch_import.provider_job_id,
                     payload=augmented_payload,
                 )
-            outcome = agent.import_result(batch_import=batch_import_to_use)
+            outcome = await agent.import_result(batch_import=batch_import_to_use)
             if outcome.next_request is not None:
                 next_request = outcome.next_request
                 root_id = root_ids[submit_request.request_id]

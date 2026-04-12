@@ -21,6 +21,7 @@ from openai.types.chat import (
     ChatCompletionFunctionToolParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
+    ChatCompletionToolMessageParam,
     ChatCompletionToolUnionParam,
     ChatCompletionUserMessageParam,
 )
@@ -52,7 +53,6 @@ from quick_agent.models.batch_request import (
     BatchMessage,
     BatchModelConfig,
     BatchSubmitRequest,
-    ToolCall,
 )
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
@@ -621,11 +621,13 @@ class QuickAgent:
                     response_format = response_format_obj
         if response_format is None and output_schema is not None:
             schema_cls = resolve_schema(self.loaded, output_schema)
+            schema = schema_cls.model_json_schema()
+            self._apply_strict_schema(schema)
             response_format = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema_cls.__name__,
-                    "schema": schema_cls.model_json_schema(),
+                    "schema": schema,
                     "strict": True,
                 },
             }
@@ -786,13 +788,13 @@ class QuickAgent:
             return items
         raise ValueError(f"Unsupported completed batch output type: {type(value)}")
 
-    def import_result(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
+    async def import_result(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
         outcome = self._import_outcome(batch_import=batch_import)
         if outcome.tool_calls is not None:
             pending = outcome.pending_submit_request
             if pending is None:
                 raise ValueError("tool_use outcome is missing pending_submit_request.")
-            executed = self._execute_tool_calls(outcome.tool_calls)
+            executed = await self._execute_tool_calls(outcome.tool_calls)
             next_request = self._build_next_request_with_tool_results(
                 tool_calls=outcome.tool_calls,
                 executed=executed,
@@ -820,7 +822,7 @@ class QuickAgent:
             next_request=result_outcome.next_request,
         )
 
-    def _execute_tool_calls(
+    async def _execute_tool_calls(
         self, tool_calls: list[dict[str, object]]
     ) -> list[ToolCallResult]:
         prefix = "QuickAgent._execute_tool_calls"
@@ -850,15 +852,6 @@ class QuickAgent:
                     )
                 )
                 continue
-            if inspect.iscoroutinefunction(tool.function):
-                results.append(
-                    ToolCallResult(
-                        id=tc_id,
-                        name=tc_name,
-                        error=f"Async tool '{tc_name}' is not supported in batch mode.",
-                    )
-                )
-                continue
             args: dict[str, object] = {}
             if isinstance(tc_args, dict):
                 args = tc_args
@@ -879,38 +872,20 @@ class QuickAgent:
                         )
                     )
                     continue
-                plain_func: Callable[..., Any] = tool.function
-                output = plain_func(**args)
-
-                # Handle agent_call tool specifically
-                if tc_name == "agent_call" and isinstance(output, dict):
-                    state_obj = output.get("state")
-                    if state_obj == "completed":
-                        output_obj = output.get("output")
-                        if isinstance(output_obj, dict) and "text" in output_obj:
-                            content = output_obj["text"]
-                        else:
-                            content = (
-                                str(output_obj) if output_obj is not None else None
-                            )
-                    elif state_obj == "error":
-                        error_obj = output.get("message")
-                        content = (
-                            str(error_obj) if error_obj is not None else "Unknown error"
-                        )
-                    else:
-                        content = None
-                    results.append(
-                        ToolCallResult(id=tc_id, name=tc_name, content=content)
-                    )
+                if inspect.iscoroutinefunction(tool.function):
+                    output = await tool.function(**args)
+                else:
+                    plain_func: Callable[..., Any] = tool.function
+                    output = plain_func(**args)
+                if isinstance(output, dict):
+                    text_val = output.get("text")
+                    content = str(text_val) if text_val is not None else json.dumps(output)
                 else:
                     content = str(output)
-                    logger.info(
-                        f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content) if content else 0}"
-                    )
-                    results.append(
-                        ToolCallResult(id=tc_id, name=tc_name, content=content)
-                    )
+                logger.info(
+                    f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content)}"
+                )
+                results.append(ToolCallResult(id=tc_id, name=tc_name, content=content))
             except Exception as exc:
                 logger.error(f"{prefix}: tool_id={tc_id} name={tc_name} > error={exc}")
                 results.append(ToolCallResult(id=tc_id, name=tc_name, error=str(exc)))
@@ -925,9 +900,6 @@ class QuickAgent:
     ) -> BatchSubmitRequest:
         messages: list[BatchMessage] = list(submit_request.messages)
         oa_tool_calls: list[dict[str, JsonValue]] = []
-
-        # Track if any agent_call tool was executed
-        agent_call_content = None
 
         for tc in tool_calls:
             tc_id_obj = tc.get("id")
@@ -958,9 +930,6 @@ class QuickAgent:
 
         for tc, result in zip(tool_calls, executed):
             tc_name = tc.get("name")
-            if tc_name == "agent_call":
-                agent_call_content = result.content
-                continue
             content = result.error if result.content is None else result.content
             messages.append(
                 BatchMessage(
@@ -968,21 +937,6 @@ class QuickAgent:
                     content=content or "",
                     name=tc_name or "unknown",
                     tool_call_id=result.id,
-                )
-            )
-
-        # If agent_call was executed and returned content, add it as a tool message
-        if agent_call_content is not None:
-            messages.append(
-                BatchMessage(
-                    role="tool",
-                    content=agent_call_content,
-                    name="agent_call",
-                    tool_call_id=next(
-                        tc.get("id")
-                        for tc in tool_calls
-                        if tc.get("name") == "agent_call"
-                    ),
                 )
             )
 
@@ -1116,6 +1070,18 @@ class QuickAgent:
             return self._parse_structured_result(raw_result, schema_cls)
         raise ValueError(f"Unsupported import step kind: {step_kind}")
 
+    def _apply_strict_schema(self, schema: dict[str, JsonValue]) -> None:
+        if "properties" in schema:
+            schema["additionalProperties"] = False
+            props = schema.get("properties")
+            if isinstance(props, dict):
+                schema["required"] = list(props.keys())
+        defs = schema.get("$defs")
+        if isinstance(defs, dict):
+            for def_schema in defs.values():
+                if isinstance(def_schema, dict):
+                    self._apply_strict_schema(def_schema)
+
     def _finalize_output_contract(self, output: AgentResult) -> AgentResult:
         output_schema = self.loaded.spec.output.output_schema
         output_format = self.loaded.spec.output.format
@@ -1131,7 +1097,7 @@ class QuickAgent:
             raise ValueError("Structured output requires schema-compatible result.")
         if output_format == "json":
             if isinstance(output, BaseModel):
-                return output.model_dump(mode="json")
+                return output
             if isinstance(output, dict):
                 return output
             if isinstance(output, str):
@@ -1194,11 +1160,7 @@ class QuickAgent:
         prefix = "QuickAgent._local_batch_call"
         api_key_env = self.model_spec.api_key_env
         api_key = os.environ.get(api_key_env, "noop")
-        if api_key == "noop":
-            api_key = os.environ.get("OPENAI_API_KEY", "noop")
-        # Hardcode API key for testing
-        api_key = os.environ["OPENAI_API_KEY"]
-        logger.debug(f"{prefix}: api_key_env={api_key_env}, api_key={api_key}")
+        logger.debug(f"{prefix}: api_key_env={api_key_env}")
         timeout_seconds = self.model_spec.timeout_seconds
         client = (
             self.client
@@ -1218,12 +1180,28 @@ class QuickAgent:
                     "content": batch_message.content or "",
                 }
                 messages.append(system_message)
-                continue
-            user_message: ChatCompletionUserMessageParam = {
-                "role": "user",
-                "content": batch_message.content or "",
-            }
-            messages.append(user_message)
+            elif batch_message.role == "assistant":
+                assistant_message: ChatCompletionAssistantMessageParam = {
+                    "role": "assistant",
+                }
+                if batch_message.content is not None:
+                    assistant_message["content"] = batch_message.content
+                if batch_message.tool_calls is not None:
+                    assistant_message["tool_calls"] = batch_message.tool_calls  # type: ignore[typeddict-item]
+                messages.append(assistant_message)
+            elif batch_message.role == "tool":
+                tool_message: ChatCompletionToolMessageParam = {
+                    "role": "tool",
+                    "content": batch_message.content or "",
+                    "tool_call_id": batch_message.tool_call_id or "",
+                }
+                messages.append(tool_message)
+            else:
+                user_message: ChatCompletionUserMessageParam = {
+                    "role": "user",
+                    "content": batch_message.content or "",
+                }
+                messages.append(user_message)
         extra_body: dict[str, JsonValue] | None = None
         if self.model_settings_json is not None:
             extra_body_obj = self.model_settings_json.get("extra_body")
@@ -1273,85 +1251,18 @@ class QuickAgent:
             raise ValueError("Model returned no completion choices.")
         message_obj = response.choices[0].message
         content_obj = message_obj.content
-        tool_calls = message_obj.tool_calls
+        tool_calls = getattr(message_obj, "tool_calls", None)
 
         if not content_obj and not tool_calls:
-            refusal_obj = message_obj.refusal
+            refusal_obj = getattr(message_obj, "refusal", None)
             if refusal_obj:
                 raise ValueError(f"Model refused response: {refusal_obj}")
-            # Log the full response for debugging
-            logger.error(
-                f"{prefix}: Model returned an empty response. Full response: {json.dumps(response.model_dump(), indent=2)}"
-            )
             raise ValueError("Model returned an empty response.")
 
         if tool_calls:
-            # Handle tool calls
-            # Check if any tool call is for "agent_call"
-            agent_call_tool = None
-            for tool_call in tool_calls:
-                if tool_call.function.name == "agent_call":
-                    agent_call_tool = tool_call
-                    break
-
-            # If agent_call is detected, return a BatchImportRequest with state: "completed" and the output
-            if agent_call_tool is not None:
-                # Execute the agent_call tool asynchronously to get the result
-                print(
-                    f"DEBUG: Executing agent_call tool with args: {agent_call_tool.function.arguments}"
-                )  # Debug line
-                if self.toolset is None:
-                    raise ValueError("Toolset is not available.")
-                tool = self.toolset.tools.get("agent_call")
-                if tool is None:
-                    raise ValueError("agent_call tool not found.")
-
-                # Parse the tool arguments
-                try:
-                    args = json.loads(agent_call_tool.function.arguments)
-                except json.JSONDecodeError:
-                    args = {}
-
-                # Call the agent_call tool
-                if inspect.iscoroutinefunction(tool.function):
-                    output = await tool.function(**args)
-                else:
-                    plain_func: Callable[..., Any] = tool.function
-                    output = plain_func(**args)
-                print(f"DEBUG: agent_call output: {output}")  # Debug line
-                if isinstance(output, dict) and output.get("state") == "completed":
-                    output_content = output.get("output", {})
-                    if isinstance(output_content, dict) and "text" in output_content:
-                        output_value = output_content["text"]
-                    elif isinstance(output_content, str):
-                        output_value = output_content
-                    else:
-                        output_value = (
-                            str(output_content) if output_content is not None else ""
-                        )
-                    return BatchImportRequest(
-                        request_id=batch_request.request_id,
-                        agent_id=batch_request.agent_id,
-                        step_id=batch_request.step_id,
-                        payload={
-                            "state": "completed",
-                            "output": output_value,
-                        },
-                    )
-
-            # Default behavior for other tools
             return BatchImportRequest(
                 request_id=batch_request.request_id,
-                agent_id=batch_request.agent_id,
-                step_id=batch_request.step_id,
-                import_data=[
-                    ToolCall(
-                        tool_name=tool_call.function.name,
-                        tool_args=tool_call.function.arguments,
-                        tool_call_id=tool_call.id,
-                    )
-                    for tool_call in tool_calls
-                ],
+                provider_job_id=getattr(response, "id", None),
                 payload={
                     "state": "tool_use",
                     "tool_calls": [
@@ -1362,6 +1273,7 @@ class QuickAgent:
                         }
                         for tool_call in tool_calls
                     ],
+                    "submit_request": batch_request.model_dump(mode="json"),
                 },
             )
         return BatchImportRequest(
@@ -1395,20 +1307,20 @@ class QuickAgent:
         request = batch_request
         while True:
             batch_import = await self._call_batch_handler(request)
-
-            # Check if this is an agent_call BatchImportRequest
-            payload = batch_import.payload
-            state_obj = payload.get("state")
-            if state_obj == "completed" and "output" in payload:
-                raw_result = self._as_agent_result(payload["output"])
-                if raw_result is not None:
-                    if schema_cls is None:
-                        if isinstance(raw_result, str):
-                            return raw_result
-                        raise ValueError("Text step expected a string output.")
-                    return self._parse_structured_result(raw_result, schema_cls)
-
             outcome = self._import_outcome(batch_import=batch_import)
+            if outcome.tool_calls is not None:
+                pending = outcome.pending_submit_request
+                if pending is None:
+                    raise ValueError(
+                        "tool_use outcome is missing pending_submit_request."
+                    )
+                executed = await self._execute_tool_calls(outcome.tool_calls)
+                request = self._build_next_request_with_tool_results(
+                    tool_calls=outcome.tool_calls,
+                    executed=executed,
+                    submit_request=pending,
+                )
+                continue
             if outcome.next_request is not None:
                 request = outcome.next_request
                 continue

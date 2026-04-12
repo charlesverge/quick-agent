@@ -16,12 +16,6 @@ from pydantic import (
 from quick_agent.types import AgentResult
 
 
-class ToolCall(BaseModel):
-    tool_name: str
-    tool_args: str
-    tool_call_id: str
-
-
 class BatchToolDefinition(BaseModel):
     name: str
     description: str
@@ -127,13 +121,6 @@ class BatchSubmitRequest(BaseModel):
     tool_use_enabled: bool = False
     bedrock_model_id: str | None = None
     context: BatchAgentContext = Field(default_factory=BatchAgentContext)
-    state: dict[str, object] = Field(default_factory=dict)
-
-
-class BatchImportRequest(BaseModel):
-    request_id: str
-    provider_job_id: str | None = None
-    payload: dict[str, JsonValue] = Field(default_factory=dict)
 
     def _inference_config(self) -> dict[str, object]:
         inference_config: dict[str, object] = {}
@@ -484,6 +471,12 @@ class BatchImportRequest(BaseModel):
         if mode == "anthropic_invoke":
             return self._build_anthropic_invoke_jsonl_line()
         return self._build_open_weight_invoke_jsonl_line()
+
+
+class BatchImportRequest(BaseModel):
+    request_id: str
+    provider_job_id: str | None = None
+    payload: dict[str, JsonValue]
 
 
 class BatchImportOutcome(BaseModel):

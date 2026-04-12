@@ -2787,7 +2787,7 @@ async def test_orchestrator_import_uses_same_arguments_as_run(
     orch = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
     run_input = input_adaptors_module.TextInput("hello")
     init_recorder = SyncCallRecorder(return_value=None)
-    import_recorder = SyncCallRecorder(return_value=BatchImportOutcome(result="ok"))
+    import_recorder = AsyncCallRecorder(return_value=BatchImportOutcome(result="ok"))
     monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
     monkeypatch.setattr(QuickAgent, "import_result", import_recorder)
     request = BatchImportRequest(
@@ -3001,7 +3001,8 @@ def test_batch_structured_step_includes_response_format_for_non_openai() -> None
     assert request.response_format["type"] == "json_schema"
 
 
-def test_apply_imported_batch_result_returns_next_request() -> None:
+@pytest.mark.anyio
+async def test_apply_imported_batch_result_returns_next_request() -> None:
     qa = _make_quick_agent_for_test()
     next_request = qa.create_batch_request_for_current_step(
         step_id="s1",
@@ -3019,23 +3020,25 @@ def test_apply_imported_batch_result_returns_next_request() -> None:
             "next_request": next_request.model_dump(mode="json"),
         },
     )
-    outcome = qa.import_result(batch_import=batch_import)
+    outcome = await qa.import_result(batch_import=batch_import)
     assert outcome.next_request is not None
     assert outcome.next_request.request_id == next_request.request_id
 
 
-def test_import_entry_point_returns_outcome() -> None:
+@pytest.mark.anyio
+async def test_import_entry_point_returns_outcome() -> None:
     qa = _make_quick_agent_for_test()
     qa.loaded.spec.output.format = "markdown"
     batch_import = BatchImportRequest(
         request_id="r1",
         payload={"state": "completed", "output": "ok"},
     )
-    outcome = qa.import_result(batch_import=batch_import)
+    outcome = await qa.import_result(batch_import=batch_import)
     assert outcome.result == "ok"
 
 
-def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
+@pytest.mark.anyio
+async def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
     qa = _make_quick_agent_for_test()
     qa.loaded.spec.output.output_schema = None
     qa.loaded.spec.chain = []
@@ -3043,21 +3046,23 @@ def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
         request_id="r1",
         payload={"state": "completed", "output": {"foo": "bar"}},
     )
-    outcome = qa.import_result(batch_import=batch_import)
+    outcome = await qa.import_result(batch_import=batch_import)
     assert outcome.result == {"foo": "bar"}
 
 
-def test_apply_imported_batch_result_maps_tools_not_supported_error() -> None:
+@pytest.mark.anyio
+async def test_apply_imported_batch_result_maps_tools_not_supported_error() -> None:
     qa = _make_quick_agent_for_test()
     batch_import = BatchImportRequest(
         request_id="r1",
         payload={"state": "error", "message": "model does not support tools"},
     )
     with pytest.raises(QuickAgentToolsNotSupportedException):
-        qa.import_result(batch_import=batch_import)
+        await qa.import_result(batch_import=batch_import)
 
 
-def test_import_chain_result_accepts_dict_for_structured_step() -> None:
+@pytest.mark.anyio
+async def test_import_chain_result_accepts_dict_for_structured_step() -> None:
     step = ChainStepSpec(
         id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
     )
@@ -3079,8 +3084,8 @@ def test_import_chain_result_accepts_dict_for_structured_step() -> None:
         request_id="r1",
         payload={"state": "completed", "output": {"x": 5}},
     )
-    outcome = qa.import_result(batch_import=batch_import)
-    assert outcome.result == {"x": 5}
+    outcome = await qa.import_result(batch_import=batch_import)
+    assert outcome.result == ExampleSchema(x=5)
     assert isinstance(qa.state["steps"]["s1"], ExampleSchema)
     assert isinstance(qa.state["last_step_output"], ExampleSchema)
 

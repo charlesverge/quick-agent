@@ -310,7 +310,7 @@ chain:
     kind: text
     prompt_section: step:respond
 output:
-  format: json
+  format: text
   file: {child_output}
 ---
 
@@ -331,7 +331,7 @@ chain:
     kind: text
     prompt_section: step:invoke
 output:
-  format: json
+  format: text
   file: {parent_output}
 ---
 
@@ -348,17 +348,11 @@ Then respond with only the returned text value.
     parent_input = safe_root / "parent_input.txt"
     parent_input.write_text("call child", encoding="utf-8")
 
-    # Write the child agent's response directly to its output file
-    child_output.parent.mkdir(parents=True, exist_ok=True)
-    child_output.write_text('{"text": "pong"}', encoding="utf-8")
-
     orchestrator = Orchestrator(
         [agents_dir],
         [tmp_path / "tools"],
         safe_dir=safe_root,
     )
-
-    import anyio
 
     output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
     assert output == "pong"
@@ -381,7 +375,7 @@ chain:
     kind: text
     prompt_section: step:respond
 output:
-  format: json
+  format: text
   file: {child_output}
 ---
 
@@ -402,7 +396,7 @@ chain:
     kind: text
     prompt_section: step:invoke
 output:
-  format: json
+  format: text
   file: {parent_output}
 ---
 
@@ -529,8 +523,8 @@ chain:
     kind: text
     prompt_section: step:execute
 output:
-  format: json
-  file: out/result.json
+  format: text
+  file: out/result.txt
 ---
 
 ## step:execute
