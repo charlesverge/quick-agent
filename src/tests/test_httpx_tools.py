@@ -59,8 +59,9 @@ class BuildModelStub:
     ) -> OpenAIChatModel:
         return self.model
 
+ok_content = json.dumps({"result": "ok"})
 
-def _chat_completion_response(model_name: str, content: str = "ok") -> dict[str, Any]:
+def _chat_completion_response(model_name: str, content: str = ok_content) -> dict[str, Any]:
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -87,7 +88,7 @@ def _messages_by_role(
 async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response(DEFAULT_MODEL_NAME, content=json.dumps({"result": "ok"}))
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
@@ -134,7 +135,7 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
         result = await agent.run()
 
     assert result and isinstance(result, dict)
-    assert result.get("result") == "ok"
+    assert json.dumps({"result": "ok"}) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.last_json is not None
     assert recorder.last_json.get("tools") is None
@@ -196,7 +197,7 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
 
         result = await agent.run()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.last_json is not None
     tools_json = recorder.last_json.get("tools")
@@ -254,7 +255,7 @@ async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
 
         result = await agent.run()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert recorder.last_json is not None
     messages = recorder.last_json.get("messages")
     assert isinstance(messages, list)
@@ -316,7 +317,7 @@ async def test_single_shot_no_steps_instructions_only_includes_instructions(
 
         result = await agent.run()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert recorder.last_json is not None
     messages = recorder.last_json.get("messages")
     assert isinstance(messages, list)
@@ -396,7 +397,7 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
     if agent._http_client is not None:
         await agent._http_client.aclose()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.requests[0].headers.get("X-Test-Header") == "test-value"
 
@@ -466,7 +467,7 @@ async def test_connection_close_header_included_in_httpx_request(
     if agent._http_client is not None:
         await agent._http_client.aclose()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.requests[0].headers.get("connection") == "close"
 
@@ -537,7 +538,7 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
     if agent._http_client is not None:
         await agent._http_client.aclose()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.requests[0].headers.get("X-Test-Header") == "test-value"
 
@@ -546,7 +547,7 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
 async def test_extra_headers_merge_model_spec_and_param(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME, json.dumps({"result": "ok"}))
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
@@ -609,7 +610,7 @@ async def test_extra_headers_merge_model_spec_and_param(
     if agent._http_client is not None:
         await agent._http_client.aclose()
 
-    assert result == "ok"
+    assert json.dumps(result) == ok_content
     assert len(recorder.requests) == 1
     assert recorder.requests[0].headers.get("X-Param-Header") == "param-value"
     assert recorder.requests[0].headers.get("X-Model-Header") == "model-value"
