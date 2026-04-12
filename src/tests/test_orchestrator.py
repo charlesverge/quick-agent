@@ -1061,8 +1061,12 @@ async def test_run_text_step_logs_llm_request_payload_immediately(
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
+    qa._recorder._agent_id = qa._agent_id
+    qa._recorder.model_spec = qa.model_spec
+    qa._recorder.effective_base_url = qa._effective_base_url()
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
+    qa._recorder.tool_ids = list(qa.tool_ids)
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
 
@@ -2179,9 +2183,9 @@ async def test_run_text_step_propagates_unexpected_model_behavior_with_request_c
         },
         "body": '{"error":"internal"}',
     }
-    assert qa.execution_log
-    assert qa.execution_log[-1].call_site == "run_text_step"
-    curl_command = qa.execution_log[-1].to_curl()
+    assert qa._recorder.execution_log
+    assert qa._recorder.execution_log[-1].call_site == "run_text_step"
+    curl_command = qa._recorder.execution_log[-1].to_curl()
     assert "curl -X POST" in curl_command
     assert "-H 'Content-Type: application/json'" in curl_command
     assert '"model": "m"' in curl_command
@@ -2211,6 +2215,8 @@ def test_execution_log_entry_to_curl_reconstructs_when_request_missing() -> None
 def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
     qa = _make_quick_agent_for_test()
     qa.model_spec = ModelSpec(base_url="http://localhost:11434", model_name="m")
+    qa._recorder.model_spec = qa.model_spec
+    qa._recorder.effective_base_url = qa._effective_base_url()
     qa._recorder._record_llm_request(
         call_site="run_single_shot",
         step_id=None,
@@ -2221,8 +2227,8 @@ def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
         user_prompt="Summarize this file.",
         model_settings=ModelSettings(extra_body={"format": "json"}),
     )
-    assert qa.execution_log
-    curl_command = qa.execution_log[-1].to_curl()
+    assert qa._recorder.execution_log
+    curl_command = qa._recorder.execution_log[-1].to_curl()
     assert "http://localhost:11434/chat/completions" in curl_command
     assert "http://localhost:11434/v1/chat/completions" not in curl_command
 
@@ -2260,7 +2266,7 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
     qa.tool_ids = []
     qa.run_input = run_input
     qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
-    qa._http_traffic_entries = [
+    qa._recorder._http_traffic_entries = [
         {
             "event": "request",
             "request": {
@@ -2274,9 +2280,9 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
     with pytest.raises(UnexpectedModelBehavior) as raised:
         await qa._run_text_step(step=step)
     assert raised.value.message == "Exceeded maximum retries (1) for output validation"
-    assert qa.execution_log
-    assert qa.execution_log[-1].call_site == "run_text_step"
-    curl_command = qa.execution_log[-1].to_curl()
+    assert qa._recorder.execution_log
+    assert qa._recorder.execution_log[-1].call_site == "run_text_step"
+    curl_command = qa._recorder.execution_log[-1].to_curl()
     assert "http://from-log/v1/chat/completions" in curl_command
 
 
@@ -2298,14 +2304,14 @@ async def test_http_hook_recorders_store_entries_on_quick_agent() -> None:
     )
     await qa._recorder._record_http_request(request)
     await qa._recorder._record_http_response(response)
-    assert len(qa.http_request_log) == 1
-    assert len(qa.http_response_log) == 1
-    assert qa.http_request_log[0]["method"] == "POST"
-    assert qa.http_response_log[0]["status_code"] == 200
+    assert len(qa._recorder.http_request_log) == 1
+    assert len(qa._recorder.http_response_log) == 1
+    assert qa._recorder.http_request_log[0]["method"] == "POST"
+    assert qa._recorder.http_response_log[0]["status_code"] == 200
     context = qa._recorder._last_http_exchange_context()
     assert context["request_source"] == "quick_agent_http_traffic_log"
-    assert context["request"] == qa.http_request_log[-1]
-    assert context["response"] == qa.http_response_log[-1]
+    assert context["request"] == qa._recorder.http_request_log[-1]
+    assert context["response"] == qa._recorder.http_response_log[-1]
 
 
 def test_write_last_step_output_serializes_model(tmp_path: Path) -> None:
@@ -2728,8 +2734,8 @@ async def test_run_nested_agent_respects_nested_output(
     qa._tools = cast(AgentTools, object())
     qa._directory_permissions = cast(DirectoryPermissions, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
-    qa._enable_llm_request_logging = True
-    qa._llm_log_path = Path("log/custom.log")
+    qa._recorder._enable_llm_request_logging = True
+    qa._recorder._llm_log_path = Path("log/custom.log")
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])

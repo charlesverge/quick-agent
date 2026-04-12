@@ -176,14 +176,6 @@ class QuickAgent:
         )
         self.last_run_metrics: dict[str, object] | None = None
 
-    def __setattr__(self, name: str, value: object) -> None:
-        super().__setattr__(name, value)
-        recorder = getattr(self, "_recorder", None)
-        if not isinstance(recorder, Recorder):
-            return
-        elif name == "client":
-            recorder.effective_base_url = self._effective_base_url()
-
     def load_batch_context(self, *, context: BatchAgentContext) -> None:
         state_obj = context.state
         agent_id_obj = state_obj.get("agent_id")
@@ -310,8 +302,8 @@ class QuickAgent:
             model=self.model_spec,
             write_output=False,
             record_http_traffic=self._record_http_traffic,
-            enable_llm_request_logging=self._enable_llm_request_logging,
-            llm_log_path=self._llm_log_path,
+            enable_llm_request_logging=self._recorder._enable_llm_request_logging,
+            llm_log_path=self._recorder._llm_log_path,
             extra_headers=self.extra_headers,
             extra_body=self.extra_body,
             client=self.client,
@@ -371,8 +363,8 @@ class QuickAgent:
             model=self.model_spec,
             write_output=nested_write_output,
             record_http_traffic=self._record_http_traffic,
-            enable_llm_request_logging=self._enable_llm_request_logging,
-            llm_log_path=self._llm_log_path,
+            enable_llm_request_logging=self._recorder._enable_llm_request_logging,
+            llm_log_path=self._recorder._llm_log_path,
             client=self.client,
         )
         return await agent.run()
@@ -1340,42 +1332,6 @@ class QuickAgent:
         if self.client is not None:
             return str(self.client.base_url).rstrip("/")
         return self.model_spec.base_url.rstrip("/")
-
-    @property
-    def execution_log(self) -> list[ExecutionLogEntry]:
-        return self._recorder.execution_log
-
-    @property
-    def http_request_log(self) -> list[dict[str, object]]:
-        return self._recorder.http_request_log
-
-    @property
-    def http_response_log(self) -> list[dict[str, object]]:
-        return self._recorder.http_response_log
-
-    @property
-    def _enable_llm_request_logging(self) -> bool:
-        return self._recorder._enable_llm_request_logging
-
-    @_enable_llm_request_logging.setter
-    def _enable_llm_request_logging(self, value: bool) -> None:
-        self._recorder._enable_llm_request_logging = value
-
-    @property
-    def _llm_log_path(self) -> Path:
-        return self._recorder._llm_log_path
-
-    @_llm_log_path.setter
-    def _llm_log_path(self, path: Path) -> None:
-        self._recorder._llm_log_path = path
-
-    @property
-    def _http_traffic_entries(self) -> list[dict[str, object]]:
-        return self._recorder._http_traffic_entries
-
-    @_http_traffic_entries.setter
-    def _http_traffic_entries(self, entries: list[dict[str, object]]) -> None:
-        self._recorder._http_traffic_entries = entries
 
     def _unexpected_model_behavior_request_context(
         self,
