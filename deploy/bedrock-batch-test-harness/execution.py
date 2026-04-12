@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-import anyio
 import json
 import logging
 import time
 from pathlib import Path
 from uuid import uuid4
 
+import anyio
+from pydantic import JsonValue
+from settings import HarnessSettings
+from utils import run_aws, run_aws_json, write_jsonl
+
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import TextInput
-from quick_agent.models.batch_request import BatchImportRequest
-from quick_agent.models.batch_request import BatchSubmitRequest
+from quick_agent.models.batch_request import BatchImportRequest, BatchSubmitRequest
 from quick_agent.quick_agent import QuickAgent
-from settings import HarnessSettings
-from utils import run_aws
-from utils import run_aws_json
-from utils import write_jsonl
 
 logger = logging.getLogger("bedrock_batch_test_harness")
 
@@ -286,6 +285,68 @@ def _load_jsonl(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _has_tool_use(model_output: dict[str, object]) -> bool:
+    content = model_output.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "tool_use":
+                    return True
+                if "toolUse" in item:
+                    return True
+    return False
+
+
+def _extract_tool_calls(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
+    calls: list[dict[str, JsonValue]] = []
+    content = model_output.get("content")
+    if not isinstance(content, list):
+        return calls
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "tool_use":
+            id_val = item.get("id")
+            name_val = item.get("name")
+            input_val = item.get("input")
+            calls.append(
+                {
+                    "id": id_val
+                    if isinstance(id_val, (str, int, float, bool)) or id_val is None
+                    else str(id_val),
+                    "name": name_val
+                    if isinstance(name_val, (str, int, float, bool)) or name_val is None
+                    else str(name_val),
+                    "arguments": input_val
+                    if isinstance(input_val, (dict, list, str, int, float, bool))
+                    or input_val is None
+                    else str(input_val),
+                }
+            )
+        elif "toolUse" in item:
+            tool_use = item["toolUse"]
+            if isinstance(tool_use, dict):
+                tu_id = tool_use.get("toolUseId")
+                tu_name = tool_use.get("name")
+                tu_input = tool_use.get("input")
+                calls.append(
+                    {
+                        "id": tu_id
+                        if isinstance(tu_id, (str, int, float, bool)) or tu_id is None
+                        else str(tu_id),
+                        "name": tu_name
+                        if isinstance(tu_name, (str, int, float, bool))
+                        or tu_name is None
+                        else str(tu_name),
+                        "arguments": tu_input
+                        if isinstance(tu_input, (dict, list, str, int, float, bool))
+                        or tu_input is None
+                        else str(tu_input),
+                    }
+                )
+    return calls
+
+
 def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
     record_id = row.get("recordId")
     if not isinstance(record_id, str):
@@ -309,6 +370,12 @@ def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
     model_output_obj = row.get("modelOutput")
     if not isinstance(model_output_obj, dict):
         raise ValueError("Bedrock row missing modelOutput object.")
+    if _has_tool_use(model_output_obj):
+        tool_calls: list[JsonValue] = list(_extract_tool_calls(model_output_obj))
+        return BatchImportRequest(
+            request_id=record_id,
+            payload={"state": "tool_use", "tool_calls": tool_calls},
+        )
     output_text = _extract_bedrock_output_text(model_output_obj)
     return BatchImportRequest(
         request_id=record_id,
@@ -316,7 +383,7 @@ def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
     )
 
 
-async def import_results_from_settings(settings: HarnessSettings) -> None:
+async def import_result_from_settings(settings: HarnessSettings) -> None:
     logger.info("execution: importing Bedrock output into quick-agent outcomes")
     submit_rows = _load_jsonl(settings.submit_requests_jsonl)
     current_requests: list[BatchSubmitRequest] = []
@@ -427,7 +494,19 @@ async def import_results_from_settings(settings: HarnessSettings) -> None:
                 extra_tools=context.extra_tools,
             )
             agent.load_batch_context(context=context)
-            outcome = agent.import_result(batch_import=batch_import)
+            batch_import_to_use = batch_import
+            if batch_import.payload.get("state") == "tool_use":
+                submit_dump: dict[str, JsonValue] = submit_request.model_dump(
+                    mode="json"
+                )
+                augmented_payload: dict[str, JsonValue] = dict(batch_import.payload)
+                augmented_payload["submit_request"] = submit_dump
+                batch_import_to_use = BatchImportRequest(
+                    request_id=batch_import.request_id,
+                    provider_job_id=batch_import.provider_job_id,
+                    payload=augmented_payload,
+                )
+            outcome = agent.import_result(batch_import=batch_import_to_use)
             if outcome.next_request is not None:
                 next_request = outcome.next_request
                 root_id = root_ids[submit_request.request_id]
@@ -464,4 +543,4 @@ async def import_results_from_settings(settings: HarnessSettings) -> None:
 
 
 def run(settings: HarnessSettings) -> None:
-    anyio.run(import_results_from_settings, settings)
+    anyio.run(import_result_from_settings, settings)

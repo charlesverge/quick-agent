@@ -88,7 +88,7 @@ def main() -> None:
         import_json = Path(args.import_path).read_text(encoding="utf-8")
         batch_import = BatchImportRequest.model_validate(json.loads(import_json))
         out = anyio.run(
-            orch.import_results,
+            orch.import_result,
             args.agent,
             input_adaptor,
             batch_import,

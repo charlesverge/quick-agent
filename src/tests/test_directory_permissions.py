@@ -91,7 +91,7 @@ Say ok.
         [tmp_path / "tools"],
         safe_dir=safe_root,
     )
-    monkeypatch.setattr(QuickAgent, "_run_chain", AsyncReturner("ok"))
+    monkeypatch.setattr(QuickAgent, "_run_chain", AsyncReturner({"ok": "ok"}))
 
     with pytest.raises(PermissionError):
         import anyio

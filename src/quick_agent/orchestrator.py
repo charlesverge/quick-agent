@@ -11,9 +11,11 @@ from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import InputAdaptor
-from quick_agent.models.batch_request import BatchImportOutcome
-from quick_agent.models.batch_request import BatchImportRequest
-from quick_agent.models.batch_request import BatchSubmitRequest
+from quick_agent.models.batch_request import (
+    BatchImportOutcome,
+    BatchImportRequest,
+    BatchSubmitRequest,
+)
 from quick_agent.quick_agent import QuickAgent
 from quick_agent.types import AgentResult
 
@@ -80,7 +82,7 @@ class Orchestrator:
         )
         return agent.batch()
 
-    async def import_results(
+    async def import_result(
         self,
         agent_id: str,
         input_data: InputAdaptor | Path,

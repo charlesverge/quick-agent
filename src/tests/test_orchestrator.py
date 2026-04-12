@@ -27,11 +27,14 @@ from quick_agent.exceptions import (
     QuickAgentToolsNotSupportedException,
 )
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
-from quick_agent.models.batch_request import BatchImportRequest
-from quick_agent.models.batch_request import BatchImportOutcome
-from quick_agent.models.batch_request import BatchMessage
-from quick_agent.models.batch_request import BatchModelConfig
-from quick_agent.models.batch_request import BatchSubmitRequest
+from quick_agent.models.batch_request import (
+    BatchImportOutcome,
+    BatchImportRequest,
+    BatchMessage,
+    BatchModelConfig,
+    BatchSubmitRequest,
+    BatchToolDefinition,
+)
 from quick_agent.models.content_processing_spec import (
     ChunkProcessingSpec,
     ContentProcessingSpec,
@@ -45,6 +48,7 @@ from quick_agent.prompting import make_user_prompt
 from quick_agent.quick_agent import (
     ExecutionLogEntry,
     QuickAgent,
+    ToolCallResult,
     build_model,
     resolve_schema,
 )
@@ -2216,7 +2220,7 @@ async def test_run_agent_wires_dependencies(
     build_toolset_recorder = SyncCallRecorder(return_value=toolset)
     build_settings_recorder = SyncCallRecorder(return_value=settings)
     maybe_inject_recorder = SyncCallRecorder(return_value=None)
-    run_chain_recorder = AsyncCallRecorder(return_value="final")
+    run_chain_recorder = AsyncCallRecorder(return_value={"result": "final"})
     write_output_recorder = SyncCallRecorder(return_value=out_path)
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
@@ -2243,7 +2247,7 @@ async def test_run_agent_wires_dependencies(
 
     result = await agent.run()
 
-    assert result == "final"
+    assert result == {"result": "final"}
     assert fake_registry.calls == ["agent-1"]
 
     assert load_input_recorder.calls
@@ -2286,8 +2290,8 @@ async def test_run_agent_wires_dependencies(
     assert write_output_recorder.calls
     write_args, write_kwargs = write_output_recorder.calls[0]
     assert write_kwargs == {}
-    assert write_args[0] == "final"
-    assert handoff_recorder.calls == [{"args": ("final",), "kwargs": {}}]
+    assert write_args[0] == {"result": "final"}
+    assert handoff_recorder.calls == [{"args": ({"result": "final"},), "kwargs": {}}]
 
 
 @pytest.mark.anyio
@@ -2319,7 +2323,7 @@ async def test_run_skips_write_when_output_file_missing(
     build_toolset_recorder = SyncCallRecorder(return_value=toolset)
     build_settings_recorder = SyncCallRecorder(return_value=None)
     maybe_inject_recorder = SyncCallRecorder(return_value=None)
-    run_chain_recorder = AsyncCallRecorder(return_value="final")
+    run_chain_recorder = AsyncCallRecorder(return_value={"result": "final"})
     write_output_recorder = SyncCallRecorder(return_value=tmp_path / "out.json")
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
@@ -2346,9 +2350,9 @@ async def test_run_skips_write_when_output_file_missing(
 
     result = await agent.run()
 
-    assert result == "final"
+    assert result == {"result": "final"}
     assert write_output_recorder.calls == []
-    assert handoff_recorder.calls == [{"args": ("final",), "kwargs": {}}]
+    assert handoff_recorder.calls == [{"args": ({"result": "final"},), "kwargs": {}}]
 
 
 def test_init_can_disable_http_traffic_recording(
@@ -2567,16 +2571,14 @@ async def test_orchestrator_import_uses_same_arguments_as_run(
     orch = Orchestrator([Path("agents")], [Path("tools")], safe_dir=Path("safe"))
     run_input = input_adaptors_module.TextInput("hello")
     init_recorder = SyncCallRecorder(return_value=None)
-    import_recorder = SyncCallRecorder(
-        return_value=BatchImportOutcome(result="ok")
-    )
+    import_recorder = SyncCallRecorder(return_value=BatchImportOutcome(result="ok"))
     monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
-    monkeypatch.setattr(QuickAgent, "import_results", import_recorder)
+    monkeypatch.setattr(QuickAgent, "import_result", import_recorder)
     request = BatchImportRequest(
         request_id="r1",
         payload={"state": "completed", "output": "done"},
     )
-    outcome = await orch.import_results(
+    outcome = await orch.import_result(
         "file-manager",
         run_input,
         request,
@@ -2915,3 +2917,150 @@ async def test_run_structured_step_parses_batch_output_with_json_fallback() -> N
     output = await qa._run_structured_step(step=step)
     assert isinstance(output, ExampleSchema)
     assert output.x == 7
+
+
+def test_import_outcome_handles_tool_use_state() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system",
+        user_prompt="user prompt",
+        model_settings=None,
+    )
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={
+            "state": "tool_use",
+            "tool_calls": [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}],
+            "submit_request": submit_request.model_dump(mode="json"),
+        },
+    )
+    outcome = qa._import_outcome(batch_import=batch_import)
+    assert outcome.tool_calls is not None
+    assert len(outcome.tool_calls) == 1
+    assert outcome.tool_calls[0]["id"] == "call1"
+    assert outcome.pending_submit_request is not None
+
+
+def test_import_outcome_tool_use_missing_tool_calls_raises() -> None:
+    qa = _make_quick_agent_for_test()
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={"state": "tool_use"},
+    )
+    with pytest.raises(ValueError, match="tool_calls"):
+        qa._import_outcome(batch_import=batch_import)
+
+
+def test_build_next_request_with_tool_results_extends_messages() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system",
+        user_prompt="user prompt",
+        model_settings=None,
+    )
+    tool_calls = [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}]
+    executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
+    next_req = qa._build_next_request_with_tool_results(
+        tool_calls=tool_calls,
+        executed=executed,
+        submit_request=submit_request,
+    )
+    assert len(next_req.messages) == len(submit_request.messages) + 2
+    assistant_msg = next_req.messages[-2]
+    assert assistant_msg.role == "assistant"
+    assert assistant_msg.tool_calls is not None
+    tool_msg = next_req.messages[-1]
+    assert tool_msg.role == "tool"
+    assert tool_msg.content == "result text"
+    assert tool_msg.tool_call_id == "call1"
+
+
+def test_build_converse_jsonl_line_with_tool_calls() -> None:
+    request = BatchSubmitRequest(
+        request_id="r1",
+        agent_id="a",
+        step_id=None,
+        step_kind="text",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[
+            BatchMessage(role="system", content="sys"),
+            BatchMessage(role="user", content="hello"),
+            BatchMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call1",
+                        "type": "function",
+                        "function": {"name": "my_tool", "arguments": '{"x": 1}'},
+                    }
+                ],
+            ),
+            BatchMessage(
+                role="tool", content="result", tool_call_id="call1", name="my_tool"
+            ),
+        ],
+    )
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    messages = model_input["messages"]
+    assert len(messages) == 3  # user, assistant, user(tool_result)
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+    assistant_content = messages[1]["content"]
+    assert any("toolUse" in block for block in assistant_content)
+    assert messages[2]["role"] == "user"
+    tool_result_content = messages[2]["content"]
+    assert any("toolResult" in block for block in tool_result_content)
+
+
+def test_batch_message_supports_tool_calls_field() -> None:
+    msg = BatchMessage(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "x",
+                "type": "function",
+                "function": {"name": "t", "arguments": "{}"},
+            }
+        ],
+    )
+    assert msg.tool_calls is not None
+    assert msg.content is None
+
+
+def test_batch_submit_request_supports_tools_field() -> None:
+    req = BatchSubmitRequest(
+        request_id="r1",
+        agent_id="a",
+        step_id=None,
+        step_kind="text",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="t", description="test tool", input_schema={"type": "object"}
+            )
+        ],
+        tool_use_enabled=True,
+    )
+    assert req.tool_use_enabled is True
+    assert req.tools is not None
+    assert req.tools[0].name == "t"

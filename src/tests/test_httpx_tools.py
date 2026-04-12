@@ -7,6 +7,7 @@ import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.toolsets import FunctionToolset
+
 from quick_agent import quick_agent as qa_module
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
@@ -59,7 +60,7 @@ class BuildModelStub:
         return self.model
 
 
-def _chat_completion_response(model_name: str) -> dict[str, Any]:
+def _chat_completion_response(model_name: str, content: str = "ok") -> dict[str, Any]:
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -68,7 +69,7 @@ def _chat_completion_response(model_name: str) -> dict[str, Any]:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": "ok"},
+                "message": {"role": "assistant", "content": content},
                 "finish_reason": "stop",
             }
         ],
@@ -86,7 +87,7 @@ def _messages_by_role(
 async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
+    response_json = _chat_completion_response(DEFAULT_MODEL_NAME, content=json.dumps({"result": "ok"}))
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
@@ -132,7 +133,8 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
 
         result = await agent.run()
 
-    assert result == "ok"
+    assert result and isinstance(result, dict)
+    assert result.get("result") == "ok"
     assert len(recorder.requests) == 1
     assert recorder.last_json is not None
     assert recorder.last_json.get("tools") is None
