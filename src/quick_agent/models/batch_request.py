@@ -309,20 +309,18 @@ class BatchImportRequest(BaseModel):
 
 
 class BatchImportOutcome(BaseModel):
-    final_result: SkipValidation[AgentResult] | None = None
-    next_submit_request: BatchSubmitRequest | None = None
+    result: SkipValidation[AgentResult] | None = None
+    next_request: BatchSubmitRequest | None = None
 
-    @field_serializer("final_result", when_used="json")
-    def serialize_final_result(self, value: AgentResult | None) -> object:
+    @field_serializer("result", when_used="json")
+    def serialize_result(self, value: AgentResult | None) -> object:
         return _serialize_agent_result(value)
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "BatchImportOutcome":
-        has_result = self.final_result is not None
-        has_next = self.next_submit_request is not None
-        if has_result == has_next:
+        if self.result is None and self.next_request is None:
             raise ValueError(
-                "BatchImportOutcome must include exactly one of final_result or next_submit_request."
+                "BatchImportOutcome must include result or next_request."
             )
         return self
 

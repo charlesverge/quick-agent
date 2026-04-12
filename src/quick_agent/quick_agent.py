@@ -714,16 +714,16 @@ class QuickAgent:
             if "output" not in payload:
                 raise ValueError("Completed batch payload is missing 'output'.")
             return BatchImportOutcome(
-                final_result=self._as_agent_result(payload["output"])
+                result=self._as_agent_result(payload["output"])
             )
         if state_obj == "submit_next":
-            next_request_obj = payload.get("next_submit_request")
+            next_request_obj = payload.get("next_request")
             if not isinstance(next_request_obj, dict):
                 raise ValueError(
-                    "submit_next batch payload is missing object field 'next_submit_request'."
+                    "submit_next batch payload is missing object field 'next_request'."
                 )
-            next_submit_request = BatchSubmitRequest.model_validate(next_request_obj)
-            return BatchImportOutcome(next_submit_request=next_submit_request)
+            next_request = BatchSubmitRequest.model_validate(next_request_obj)
+            return BatchImportOutcome(next_request=next_request)
         raise ValueError(f"Unsupported batch import state: {state_obj}")
 
     def _as_agent_result(self, value: object) -> AgentResult:
@@ -747,23 +747,26 @@ class QuickAgent:
 
     def import_result(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
         outcome = self._import_outcome(batch_import=batch_import)
-        if outcome.next_submit_request is not None:
+        if outcome.next_request is not None:
             return outcome
-        raw_result = outcome.final_result
+        raw_result = outcome.result
         if raw_result is None:
-            raise ValueError("Batch import outcome did not include a final result.")
+            raise ValueError("Batch import outcome did not include a result.")
         result_outcome = (
             self._import_chain_result(raw_result)
             if self.loaded.spec.chain
             else self._import_single_shot_result(raw_result)
         )
-        final_result = result_outcome.final_result
-        if final_result is None:
-            raise ValueError("Import result did not produce a final output.")
-        finalized = self._finalize_output_contract(final_result)
+        result = result_outcome.result
+        if result is None:
+            raise ValueError("Import result did not produce output.")
+        finalized = self._finalize_output_contract(result)
         if self._write_output_file:
             self._write_last_step_output(finalized)
-        return BatchImportOutcome(final_result=finalized)
+        return BatchImportOutcome(
+            result=finalized,
+            next_request=result_outcome.next_request,
+        )
 
     def _import_single_shot_result(self, raw_result: AgentResult) -> BatchImportOutcome:
         schema_name = self.loaded.spec.output.output_schema
@@ -774,7 +777,7 @@ class QuickAgent:
             output_schema=schema_name,
             step_id=None,
         )
-        return BatchImportOutcome(final_result=parsed)
+        return BatchImportOutcome(result=parsed)
 
     def _import_chain_result(self, raw_result: AgentResult) -> BatchImportOutcome:
         chain = self.loaded.spec.chain
@@ -825,13 +828,13 @@ class QuickAgent:
                 user_prompt=make_user_prompt(self.run_input, self.state),
                 model_settings=next_model_settings,
             )
-            return BatchImportOutcome(next_submit_request=next_request)
+            return BatchImportOutcome(result=parsed, next_request=next_request)
         final_result: AgentResult
         if self.loaded.spec.output.return_compiled_output:
             final_result = self._compiled_output(parsed)
         else:
             final_result = parsed
-        return BatchImportOutcome(final_result=final_result)
+        return BatchImportOutcome(result=final_result)
 
     def _parse_import_result(
         self,
@@ -1036,10 +1039,10 @@ class QuickAgent:
         while True:
             batch_import = await self._call_batch_handler(request)
             outcome = self._import_outcome(batch_import=batch_import)
-            if outcome.next_submit_request is not None:
-                request = outcome.next_submit_request
+            if outcome.next_request is not None:
+                request = outcome.next_request
                 continue
-            raw_result = outcome.final_result
+            raw_result = outcome.result
             if raw_result is None:
                 raise ValueError("Batch import outcome did not include a final result.")
             if schema_cls is None:

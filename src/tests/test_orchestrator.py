@@ -2568,7 +2568,7 @@ async def test_orchestrator_import_uses_same_arguments_as_run(
     run_input = input_adaptors_module.TextInput("hello")
     init_recorder = SyncCallRecorder(return_value=None)
     import_recorder = SyncCallRecorder(
-        return_value=BatchImportOutcome(final_result="ok")
+        return_value=BatchImportOutcome(result="ok")
     )
     monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
     monkeypatch.setattr(QuickAgent, "import_results", import_recorder)
@@ -2583,7 +2583,7 @@ async def test_orchestrator_import_uses_same_arguments_as_run(
         record_http_traffic=False,
         enable_llm_request_logging=False,
     )
-    assert outcome.final_result == "ok"
+    assert outcome.result == "ok"
 
 
 def test_create_batch_request_for_current_step() -> None:
@@ -2798,12 +2798,12 @@ def test_apply_imported_batch_result_returns_next_request() -> None:
         request_id="r1",
         payload={
             "state": "submit_next",
-            "next_submit_request": next_request.model_dump(mode="json"),
+            "next_request": next_request.model_dump(mode="json"),
         },
     )
     outcome = qa.import_result(batch_import=batch_import)
-    assert outcome.next_submit_request is not None
-    assert outcome.next_submit_request.request_id == next_request.request_id
+    assert outcome.next_request is not None
+    assert outcome.next_request.request_id == next_request.request_id
 
 
 def test_import_entry_point_returns_outcome() -> None:
@@ -2814,7 +2814,7 @@ def test_import_entry_point_returns_outcome() -> None:
         payload={"state": "completed", "output": "ok"},
     )
     outcome = qa.import_result(batch_import=batch_import)
-    assert outcome.final_result == "ok"
+    assert outcome.result == "ok"
 
 
 def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
@@ -2826,7 +2826,7 @@ def test_import_entry_point_allows_single_shot_dict_without_schema() -> None:
         payload={"state": "completed", "output": {"foo": "bar"}},
     )
     outcome = qa.import_result(batch_import=batch_import)
-    assert outcome.final_result == {"foo": "bar"}
+    assert outcome.result == {"foo": "bar"}
 
 
 def test_apply_imported_batch_result_maps_tools_not_supported_error() -> None:
@@ -2862,7 +2862,7 @@ def test_import_chain_result_accepts_dict_for_structured_step() -> None:
         payload={"state": "completed", "output": {"x": 5}},
     )
     outcome = qa.import_result(batch_import=batch_import)
-    assert outcome.final_result == {"x": 5}
+    assert outcome.result == {"x": 5}
     assert isinstance(qa.state["steps"]["s1"], ExampleSchema)
     assert isinstance(qa.state["last_step_output"], ExampleSchema)
 
