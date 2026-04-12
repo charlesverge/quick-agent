@@ -428,8 +428,8 @@ async def import_results_from_settings(settings: HarnessSettings) -> None:
             )
             agent.load_batch_context(context=context)
             outcome = agent.import_result(batch_import=batch_import)
-            if outcome.next_submit_request is not None:
-                next_request = outcome.next_submit_request
+            if outcome.next_request is not None:
+                next_request = outcome.next_request
                 root_id = root_ids[submit_request.request_id]
                 root_ids[next_request.request_id] = root_id
                 next_requests.append(next_request)
