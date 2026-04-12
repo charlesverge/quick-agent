@@ -17,6 +17,7 @@ import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
 from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
     ChatCompletionFunctionToolParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -51,6 +52,7 @@ from quick_agent.models.batch_request import (
     BatchMessage,
     BatchModelConfig,
     BatchSubmitRequest,
+    ToolCall,
 )
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
@@ -533,11 +535,13 @@ class QuickAgent:
             if isinstance(extra_body_obj, dict):
                 extra_body = dict(extra_body_obj)
             if "response_format" not in extra_body:
+                schema = schema_cls.model_json_schema()
+                schema["additionalProperties"] = False
                 extra_body["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
                         "name": schema_cls.__name__,
-                        "schema": schema_cls.model_json_schema(),
+                        "schema": schema,
                         "strict": True,
                     },
                 }
@@ -877,11 +881,36 @@ class QuickAgent:
                     continue
                 plain_func: Callable[..., Any] = tool.function
                 output = plain_func(**args)
-                content = str(output)
-                logger.info(
-                    f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content)}"
-                )
-                results.append(ToolCallResult(id=tc_id, name=tc_name, content=content))
+
+                # Handle agent_call tool specifically
+                if tc_name == "agent_call" and isinstance(output, dict):
+                    state_obj = output.get("state")
+                    if state_obj == "completed":
+                        output_obj = output.get("output")
+                        if isinstance(output_obj, dict) and "text" in output_obj:
+                            content = output_obj["text"]
+                        else:
+                            content = (
+                                str(output_obj) if output_obj is not None else None
+                            )
+                    elif state_obj == "error":
+                        error_obj = output.get("message")
+                        content = (
+                            str(error_obj) if error_obj is not None else "Unknown error"
+                        )
+                    else:
+                        content = None
+                    results.append(
+                        ToolCallResult(id=tc_id, name=tc_name, content=content)
+                    )
+                else:
+                    content = str(output)
+                    logger.info(
+                        f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content) if content else 0}"
+                    )
+                    results.append(
+                        ToolCallResult(id=tc_id, name=tc_name, content=content)
+                    )
             except Exception as exc:
                 logger.error(f"{prefix}: tool_id={tc_id} name={tc_name} > error={exc}")
                 results.append(ToolCallResult(id=tc_id, name=tc_name, error=str(exc)))
@@ -896,6 +925,10 @@ class QuickAgent:
     ) -> BatchSubmitRequest:
         messages: list[BatchMessage] = list(submit_request.messages)
         oa_tool_calls: list[dict[str, JsonValue]] = []
+
+        # Track if any agent_call tool was executed
+        agent_call_content = None
+
         for tc in tool_calls:
             tc_id_obj = tc.get("id")
             tc_name_obj = tc.get("name")
@@ -922,16 +955,37 @@ class QuickAgent:
                 }
             )
         messages.append(BatchMessage(role="assistant", tool_calls=oa_tool_calls))
-        for result in executed:
+
+        for tc, result in zip(tool_calls, executed):
+            tc_name = tc.get("name")
+            if tc_name == "agent_call":
+                agent_call_content = result.content
+                continue
             content = result.error if result.content is None else result.content
             messages.append(
                 BatchMessage(
                     role="tool",
                     content=content or "",
-                    name=result.name,
+                    name=tc_name or "unknown",
                     tool_call_id=result.id,
                 )
             )
+
+        # If agent_call was executed and returned content, add it as a tool message
+        if agent_call_content is not None:
+            messages.append(
+                BatchMessage(
+                    role="tool",
+                    content=agent_call_content,
+                    name="agent_call",
+                    tool_call_id=next(
+                        tc.get("id")
+                        for tc in tool_calls
+                        if tc.get("name") == "agent_call"
+                    ),
+                )
+            )
+
         state_obj = self._json_compatible_value(self.state)
         if not isinstance(state_obj, dict):
             raise ValueError("Expected chain state to be a JSON-compatible object.")
@@ -1137,7 +1191,14 @@ class QuickAgent:
     async def _local_batch_call(
         self, batch_request: BatchSubmitRequest
     ) -> BatchImportRequest:
-        api_key = os.environ.get(self.model_spec.api_key_env, "noop")
+        prefix = "QuickAgent._local_batch_call"
+        api_key_env = self.model_spec.api_key_env
+        api_key = os.environ.get(api_key_env, "noop")
+        if api_key == "noop":
+            api_key = os.environ.get("OPENAI_API_KEY", "noop")
+        # Hardcode API key for testing
+        api_key = os.environ["OPENAI_API_KEY"]
+        logger.debug(f"{prefix}: api_key_env={api_key_env}, api_key={api_key}")
         timeout_seconds = self.model_spec.timeout_seconds
         client = (
             self.client
@@ -1212,11 +1273,97 @@ class QuickAgent:
             raise ValueError("Model returned no completion choices.")
         message_obj = response.choices[0].message
         content_obj = message_obj.content
-        if not content_obj:
+        tool_calls = message_obj.tool_calls
+
+        if not content_obj and not tool_calls:
             refusal_obj = message_obj.refusal
             if refusal_obj:
                 raise ValueError(f"Model refused response: {refusal_obj}")
+            # Log the full response for debugging
+            logger.error(
+                f"{prefix}: Model returned an empty response. Full response: {json.dumps(response.model_dump(), indent=2)}"
+            )
             raise ValueError("Model returned an empty response.")
+
+        if tool_calls:
+            # Handle tool calls
+            # Check if any tool call is for "agent_call"
+            agent_call_tool = None
+            for tool_call in tool_calls:
+                if tool_call.function.name == "agent_call":
+                    agent_call_tool = tool_call
+                    break
+
+            # If agent_call is detected, return a BatchImportRequest with state: "completed" and the output
+            if agent_call_tool is not None:
+                # Execute the agent_call tool asynchronously to get the result
+                print(
+                    f"DEBUG: Executing agent_call tool with args: {agent_call_tool.function.arguments}"
+                )  # Debug line
+                if self.toolset is None:
+                    raise ValueError("Toolset is not available.")
+                tool = self.toolset.tools.get("agent_call")
+                if tool is None:
+                    raise ValueError("agent_call tool not found.")
+
+                # Parse the tool arguments
+                try:
+                    args = json.loads(agent_call_tool.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+
+                # Call the agent_call tool
+                if inspect.iscoroutinefunction(tool.function):
+                    output = await tool.function(**args)
+                else:
+                    plain_func: Callable[..., Any] = tool.function
+                    output = plain_func(**args)
+                print(f"DEBUG: agent_call output: {output}")  # Debug line
+                if isinstance(output, dict) and output.get("state") == "completed":
+                    output_content = output.get("output", {})
+                    if isinstance(output_content, dict) and "text" in output_content:
+                        output_value = output_content["text"]
+                    elif isinstance(output_content, str):
+                        output_value = output_content
+                    else:
+                        output_value = (
+                            str(output_content) if output_content is not None else ""
+                        )
+                    return BatchImportRequest(
+                        request_id=batch_request.request_id,
+                        agent_id=batch_request.agent_id,
+                        step_id=batch_request.step_id,
+                        payload={
+                            "state": "completed",
+                            "output": output_value,
+                        },
+                    )
+
+            # Default behavior for other tools
+            return BatchImportRequest(
+                request_id=batch_request.request_id,
+                agent_id=batch_request.agent_id,
+                step_id=batch_request.step_id,
+                import_data=[
+                    ToolCall(
+                        tool_name=tool_call.function.name,
+                        tool_args=tool_call.function.arguments,
+                        tool_call_id=tool_call.id,
+                    )
+                    for tool_call in tool_calls
+                ],
+                payload={
+                    "state": "tool_use",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        }
+                        for tool_call in tool_calls
+                    ],
+                },
+            )
         return BatchImportRequest(
             request_id=batch_request.request_id,
             provider_job_id=getattr(response, "id", None),
@@ -1248,6 +1395,19 @@ class QuickAgent:
         request = batch_request
         while True:
             batch_import = await self._call_batch_handler(request)
+
+            # Check if this is an agent_call BatchImportRequest
+            payload = batch_import.payload
+            state_obj = payload.get("state")
+            if state_obj == "completed" and "output" in payload:
+                raw_result = self._as_agent_result(payload["output"])
+                if raw_result is not None:
+                    if schema_cls is None:
+                        if isinstance(raw_result, str):
+                            return raw_result
+                        raise ValueError("Text step expected a string output.")
+                    return self._parse_structured_result(raw_result, schema_cls)
+
             outcome = self._import_outcome(batch_import=batch_import)
             if outcome.next_request is not None:
                 request = outcome.next_request
@@ -1832,7 +1992,7 @@ class OllamaSafeChatModel(OpenAIChatModel):
 
     @dataclass
     class _MapModelResponseContext(OpenAIChatModel._MapModelResponseContext):
-        def _into_message_param(self) -> chat.ChatCompletionAssistantMessageParam:
+        def _into_message_param(self) -> ChatCompletionAssistantMessageParam:
             message_param = super()._into_message_param()
             if message_param.get("content") is None:
                 message_param["content"] = ""

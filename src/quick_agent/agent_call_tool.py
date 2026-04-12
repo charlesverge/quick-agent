@@ -43,7 +43,7 @@ class AgentCallTool:
     ) -> dict[str, Any]:
         """
         Call another agent by ID with an input file path or inline text.
-        Returns JSON-serializable dict output if structured, else {"text": "..."}.
+        Returns a BatchImportRequest-compatible payload with state and output.
         """
         if input_file and input_text:
             raise ValueError("Provide only one of input_file or input_text.")
@@ -58,5 +58,10 @@ class AgentCallTool:
             input_data = resolved_input
         out = await self._call_agent(agent, input_data)
         if isinstance(out, BaseModel):
-            return out.model_dump()
-        return {"text": out}
+            output = out.model_dump()
+        else:
+            output = {"text": out}
+        return {
+            "state": "completed",
+            "output": output,
+        }

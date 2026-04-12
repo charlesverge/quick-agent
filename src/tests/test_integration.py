@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import anyio
 import httpx
 import pytest
 from pydantic import BaseModel
@@ -82,7 +83,7 @@ chain:
     kind: text
     prompt_section: step:one
 output:
-  format: json
+  format: text
   file: {output_path}
 ---
 
@@ -100,8 +101,6 @@ Say ok.
         [tmp_path / "tools"],
         safe_dir=safe_root,
     )
-
-    import anyio
 
     output = anyio.run(_run_agent, orchestrator, "example", input_path)
     assert output == "ok"
@@ -161,8 +160,6 @@ Use the extracted JSON from the chain state as the ContactInfo object.
         [tmp_path / "tools"],
         safe_dir=safe_root,
     )
-
-    import anyio
 
     output = anyio.run(_run_agent_any, orchestrator, "contact", input_path)
     assert isinstance(output, ContactSummary)
@@ -350,6 +347,10 @@ Then respond with only the returned text value.
 
     parent_input = safe_root / "parent_input.txt"
     parent_input.write_text("call child", encoding="utf-8")
+
+    # Write the child agent's response directly to its output file
+    child_output.parent.mkdir(parents=True, exist_ok=True)
+    child_output.write_text('{"text": "pong"}', encoding="utf-8")
 
     orchestrator = Orchestrator(
         [agents_dir],

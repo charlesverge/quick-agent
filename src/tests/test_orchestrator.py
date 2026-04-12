@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
-from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import Tool
@@ -630,8 +630,6 @@ def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_run_text_step_raises_for_missing_section(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:missing")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
@@ -653,8 +651,22 @@ async def test_run_text_step_raises_for_missing_section(
 
 @pytest.mark.anyio
 async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "hello"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "hello"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
@@ -673,18 +685,32 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert output == "hello"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "systemdo thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
-    assert FakeAgent.last_init["output_type"] is str
+    batch_request = captured["batch_request"]
+    assert batch_request.messages[0].content == "systemdo thing"
+    assert batch_request.messages[1].content == make_user_prompt(run_input, qa.state)
+    assert batch_request.model.model_name == "m"
 
 
 @pytest.mark.anyio
 async def test_run_text_step_omits_tools_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "hello"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "hello"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
@@ -699,20 +725,34 @@ async def test_run_text_step_omits_tools_when_disabled(
     qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
     qa.tool_ids = []
 
-    await qa._run_text_step(
+    output = await qa._run_text_step(
         step=step,
     )
 
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["toolsets"] == []
+    assert output == "hello"
+    assert qa._toolsets_for_run() == []
 
 
 @pytest.mark.anyio
 async def test_run_step_structured_parses_json_with_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = 'preface {"x": 7} trailing'
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> ExampleSchema:
+        captured["batch_request"] = batch_request
+        return ExampleSchema(x=7)
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     schema_module = types.ModuleType("schemas.struct")
     schema_module.__dict__["ExampleSchema"] = ExampleSchema
@@ -753,13 +793,12 @@ async def test_run_step_structured_parses_json_with_fallback(
 
     assert isinstance(output, ExampleSchema)
     assert output.x == 7
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["output_type"] is ExampleSchema
+    assert captured["batch_request"].step_kind == "structured"
+    assert captured["batch_request"].response_format is not None
 
 
 @pytest.mark.anyio
 async def test_run_step_unknown_kind_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
     step = ChainStepSpec(id="s1", kind="mystery", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
@@ -781,8 +820,22 @@ async def test_run_step_unknown_kind_raises(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_run_text_step_uses_make_user_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "ok"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "ok"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
@@ -802,7 +855,7 @@ async def test_run_text_step_uses_make_user_prompt(
     )
 
     assert output == "ok"
-    assert FakeAgent.last_prompt == "prompt"
+    assert captured["batch_request"].messages[-1].content == "prompt"
     assert recorder.calls == [
         (
             (run_input, qa.state),
@@ -815,8 +868,22 @@ async def test_run_text_step_uses_make_user_prompt(
 async def test_run_text_step_no_instructions_or_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "ok"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "ok"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     spec = AgentSpec(
@@ -847,18 +914,30 @@ async def test_run_text_step_no_instructions_or_system_prompt(
     )
 
     assert output == "ok"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "do thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
-    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[0].content == "do thing"
+    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
 async def test_run_text_step_system_prompt_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "ok"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "ok"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     spec = AgentSpec(
@@ -889,16 +968,28 @@ async def test_run_text_step_system_prompt_only(
     )
 
     assert output == "ok"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "do thing"
-    assert FakeAgent.last_init["system_prompt"] == "You are concise."
-    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[0].content == "You are concise.\ndo thing"
+    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
 async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "ok"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "ok"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     spec = AgentSpec(
@@ -929,18 +1020,30 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert output == "ok"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "Use the tool.do thing"
-    assert FakeAgent.last_init["system_prompt"] == ""
-    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[0].content == "Use the tool.do thing"
+    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
 async def test_run_text_step_logs_llm_request_payload_immediately(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "ok"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "ok"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
     monkeypatch.chdir(tmp_path)
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
@@ -1004,8 +1107,22 @@ async def test_run_structured_step_missing_schema_raises() -> None:
 
 @pytest.mark.anyio
 async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = '{"x": 3}'
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> ExampleSchema:
+        captured["batch_request"] = batch_request
+        return ExampleSchema(x=3)
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     schema_module = types.ModuleType("schemas.struct2")
     schema_module.__dict__["ExampleSchema"] = ExampleSchema
@@ -1045,14 +1162,29 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
 
     assert output.model_dump() == {"x": 3}
     assert isinstance(output, ExampleSchema)
+    assert captured["batch_request"].step_kind == "structured"
 
 
 @pytest.mark.anyio
 async def test_run_structured_step_adds_json_schema_for_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_output = '{"x": 9}'
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> ExampleSchema:
+        captured["batch_request"] = batch_request
+        return ExampleSchema(x=9)
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     schema_module = types.ModuleType("schemas.struct3")
     schema_module.__dict__["ExampleSchema"] = ExampleSchema
@@ -1090,13 +1222,11 @@ async def test_run_structured_step_adds_json_schema_for_openai(
     finally:
         sys.modules.pop("schemas.struct3", None)
 
-    assert FakeAgent.last_init is not None
-    settings = FakeAgent.last_init["model_settings"]
-    assert isinstance(settings, dict)
-    extra_body = settings["extra_body"]
-    assert extra_body["response_format"]["type"] == "json_schema"
-    assert extra_body["response_format"]["json_schema"]["name"] == "ExampleSchema"
-    assert extra_body["response_format"]["json_schema"]["strict"] is True
+    assert captured["batch_request"].response_format is not None
+    response_format = captured["batch_request"].response_format
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "ExampleSchema"
+    assert response_format["json_schema"]["strict"] is True
 
 
 @pytest.mark.anyio
@@ -1480,8 +1610,22 @@ def test_run_chunk_processing_raises_for_invalid_provider() -> None:
 async def test_run_chain_single_shot_system_prompt_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "hello"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "hello"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     spec = AgentSpec(
         name="test",
@@ -1499,7 +1643,7 @@ async def test_run_chain_single_shot_system_prompt_only(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://x"))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1509,19 +1653,30 @@ async def test_run_chain_single_shot_system_prompt_only(
     output = await qa._run_chain()
 
     assert output == "hello"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == ""
-    assert FakeAgent.last_init["system_prompt"] == "You are concise."
-    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
-    assert FakeAgent.last_deps == {"state": qa.state, "memory": qa.memory}
+    assert captured["batch_request"].messages[0].content == "You are concise."
+    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
 async def test_run_chain_single_shot_instructions_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
-    FakeAgent.next_output = "hello"
+    captured: dict[str, Any] = {}
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        captured["batch_request"] = batch_request
+        return "hello"
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
 
     spec = AgentSpec(
         name="test",
@@ -1539,7 +1694,7 @@ async def test_run_chain_single_shot_instructions_only(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://x"))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1549,31 +1704,53 @@ async def test_run_chain_single_shot_instructions_only(
     output = await qa._run_chain()
 
     assert output == "hello"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["instructions"] == "Use the tool."
-    assert FakeAgent.last_init["system_prompt"] == ""
-    assert FakeAgent.last_prompt == make_user_prompt(run_input, qa.state)
-    assert FakeAgent.last_deps == {"state": qa.state, "memory": qa.memory}
+    assert captured["batch_request"].messages[0].content == "Use the tool."
+    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
 
 
 @pytest.mark.anyio
 async def test_run_text_step_maps_tools_not_supported_to_quick_agent_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_error = ModelHTTPError(
-        status_code=400,
-        model_name="deepseek-r1:14b",
-        body={
-            "message": "registry.ollama.ai/library/deepseek-r1:14b does not support tools"
-        },
-    )
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            raise qa_module.openai.APIStatusError(
+                "tools unsupported",
+                response=httpx.Response(
+                    status_code=400,
+                    request=httpx.Request(
+                        method="POST",
+                        url="http://x/chat/completions",
+                        headers={"Content-Type": "application/json"},
+                        content=b'{}',
+                    ),
+                    headers={"x-response-id": "resp-1"},
+                    content=b'{"message":"registry.ollama.ai/library/deepseek-r1:14b does not support tools"}',
+                ),
+                body={
+                    "message": "registry.ollama.ai/library/deepseek-r1:14b does not support tools"
+                },
+            )
+
+    class FakeAsyncOpenAI:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: float | None,
+            http_client: Any,
+        ) -> None:
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(qa_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="deepseek-r1:14b")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1587,12 +1764,37 @@ async def test_run_text_step_maps_tools_not_supported_to_quick_agent_exception(
 async def test_run_single_shot_maps_chat_not_supported_to_quick_agent_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
-    FakeAgent.next_error = ModelHTTPError(
-        status_code=400,
-        model_name="nomic-embed-text:v1.5",
-        body={"message": '"nomic-embed-text:v1.5" does not support chat'},
-    )
+    class FakeCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            raise qa_module.openai.APIStatusError(
+                "chat unsupported",
+                response=httpx.Response(
+                    status_code=400,
+                    request=httpx.Request(
+                        method="POST",
+                        url="http://x/chat/completions",
+                        headers={"Content-Type": "application/json"},
+                        content=b'{}',
+                    ),
+                    headers={"x-response-id": "resp-1"},
+                    content=b'{"message":"\"nomic-embed-text:v1.5\" does not support chat"}',
+                ),
+                body={"message": '"nomic-embed-text:v1.5" does not support chat'},
+            )
+
+    class FakeAsyncOpenAI:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: float | None,
+            http_client: Any,
+        ) -> None:
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(qa_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
     spec = AgentSpec(
         name="test",
         model=ModelSpec(base_url="http://x", model_name="nomic-embed-text:v1.5"),
@@ -1608,7 +1810,7 @@ async def test_run_single_shot_maps_chat_not_supported_to_quick_agent_exception(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="nomic-embed-text:v1.5")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1654,7 +1856,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(
             self.chat = types.SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setattr(single_shot_module, "Agent", ForbiddenAgent)
-    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(qa_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     spec = AgentSpec(
         name="test",
@@ -1674,7 +1876,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1690,7 +1892,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(
     assert init_kwargs["base_url"] == "https://api.openai.com/v1"
     create_kwargs = captured["create_kwargs"]
     assert create_kwargs["model"] == "gpt-4.1-mini"
-    response_format = create_kwargs["response_format"]
+    response_format = create_kwargs["extra_body"]["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "OutputSchema"
     assert response_format["json_schema"]["strict"] is True
@@ -1749,7 +1951,7 @@ async def test_run_single_shot_structured_passes_timeout_to_openai_sdk(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1801,7 +2003,7 @@ async def test_run_single_shot_structured_parses_json_with_fallback(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1831,43 +2033,30 @@ async def test_run_single_shot_structured_rejects_tools() -> None:
         step_prompts={},
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
-    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    async def batch_call(request: BatchSubmitRequest) -> BatchImportRequest:
+        assert request.output_schema == "Output"
+        raise ValueError("output.output_schema does not support tools")
+
+    qa = _make_quick_agent_for_test(
+        loaded=loaded,
+        run_input=run_input,
+        memory={"batch_call": batch_call},
+    )
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.run_input = run_input
+    qa.tool_ids = ["agent_call"]
     qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
     with pytest.raises(ValueError, match="output.output_schema does not support tools"):
         await qa._run_single_shot()
 
 
 @pytest.mark.anyio
-async def test_run_single_shot_structured_uses_pydantic_ai_when_flag_enabled(
+async def test_run_single_shot_structured_still_uses_batch_call_when_flag_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class ForbiddenAsyncOpenAI:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            _ = (args, kwargs)
-            raise AssertionError(
-                "OpenAI SDK path should not be used when single_shot_use_pydantic_ai=true."
-            )
-
-    monkeypatch.setattr(single_shot_module.openai, "AsyncOpenAI", ForbiddenAsyncOpenAI)
-    monkeypatch.setattr(single_shot_module, "Agent", FakeAgent)
-    FakeAgent.next_output = {"msg": "ok"}
-    FakeAgent.next_usage = {
-        "request_tokens": 9,
-        "response_tokens": 4,
-        "total_tokens": 13,
-    }
-    FakeAgent.next_response = types.SimpleNamespace(
-        id="resp-77",
-        model="m",
-        created=456,
-        system_fingerprint="fp-22",
-        choices=[types.SimpleNamespace(finish_reason="stop")],
-    )
-
     spec = AgentSpec(
         name="test",
         model=ModelSpec(base_url="http://x", model_name="m"),
@@ -1883,9 +2072,20 @@ async def test_run_single_shot_structured_uses_pydantic_ai_when_flag_enabled(
         step_prompts={},
     )
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
-    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    async def batch_call(request: BatchSubmitRequest) -> BatchImportRequest:
+        return BatchImportRequest(
+            request_id=request.request_id,
+            payload={"state": "completed", "output": {"msg": "ok"}},
+        )
+
+    qa = _make_quick_agent_for_test(
+        loaded=loaded,
+        run_input=run_input,
+        memory={"batch_call": batch_call},
+    )
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
+    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1896,24 +2096,12 @@ async def test_run_single_shot_structured_uses_pydantic_ai_when_flag_enabled(
 
     assert isinstance(output, OutputSchema)
     assert output.msg == "ok"
-    assert FakeAgent.last_init is not None
-    assert FakeAgent.last_init["output_type"] is OutputSchema
-    assert qa.last_run_metrics == {
-        "provider": "openai-compatible",
-        "model": "m",
-        "usage": {"request_tokens": 9, "response_tokens": 4, "total_tokens": 13},
-        "completion_id": "resp-77",
-        "created": 456,
-        "system_fingerprint": "fp-22",
-        "finish_reason": "stop",
-    }
 
 
 @pytest.mark.anyio
 async def test_run_text_step_propagates_unexpected_model_behavior_with_request_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
     request = httpx.Request(
         method="POST",
         url="http://localhost:11434/v1/chat/completions",
@@ -1931,7 +2119,21 @@ async def test_run_text_step_propagates_unexpected_model_behavior_with_request_c
         "Unexpected response", body='{"error":"internal"}'
     )
     unexpected_error.__cause__ = cause
-    FakeAgent.next_error = unexpected_error
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        raise unexpected_error
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
+
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
@@ -2029,10 +2231,24 @@ def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
 async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_for_curl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(qa_module, "Agent", FakeAgent)
-    FakeAgent.next_error = UnexpectedModelBehavior(
+    unexpected_error = UnexpectedModelBehavior(
         "Exceeded maximum retries (1) for output validation"
     )
+
+    async def fake_execute_batch_request(
+        self,
+        *,
+        batch_request: BatchSubmitRequest,
+        schema_cls: Any,
+    ) -> str:
+        raise unexpected_error
+
+    monkeypatch.setattr(
+        QuickAgent,
+        "_execute_batch_request",
+        fake_execute_batch_request,
+    )
+
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
     loaded = _make_loaded_with_chain([step])
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})

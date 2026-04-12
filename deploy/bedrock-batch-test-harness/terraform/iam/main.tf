@@ -88,6 +88,7 @@ resource "aws_iam_user_policy" "deployer" {
         Sid    = "BedrockBatchJobExecution"
         Effect = "Allow"
         Action = [
+          "bedrock:InvokeModelWithResponseStream",
           "bedrock:CreateModelInvocationJob",
           "bedrock:GetModelInvocationJob",
           "bedrock:ListModelInvocationJobs",
