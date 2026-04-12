@@ -1438,7 +1438,7 @@ def test_apply_sample_processing_writes_debug_output(
         data=None,
     )
     write_output_recorder = SyncCallRecorder(return_value=None)
-    monkeypatch.setattr(qa_module, "write_text_output", write_output_recorder)
+    monkeypatch.setattr(qa_module, "write_text", write_output_recorder)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
 
     qa._apply_sample_processing()
@@ -2459,7 +2459,7 @@ async def test_run_agent_wires_dependencies(
     monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
     monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
-    monkeypatch.setattr(QuickAgent, "_write_last_step_output", write_output_recorder)
+    monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
 
     tools = AgentTools([tmp_path])
@@ -2521,7 +2521,9 @@ async def test_run_agent_wires_dependencies(
     assert write_output_recorder.calls
     write_args, write_kwargs = write_output_recorder.calls[0]
     assert write_kwargs == {}
-    assert write_args[0] == {"result": "final"}
+    assert Path(write_args[0]) == out_path
+    assert write_args[1] == {"result": "final"}
+    assert write_args[2].root == _permissions(tmp_path).root
     assert handoff_recorder.calls == [{"args": ({"result": "final"},), "kwargs": {}}]
 
 
@@ -2562,7 +2564,7 @@ async def test_run_skips_write_when_output_file_missing(
     monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
     monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
-    monkeypatch.setattr(QuickAgent, "_write_last_step_output", write_output_recorder)
+    monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
 
     tools = AgentTools([tmp_path])

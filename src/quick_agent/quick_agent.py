@@ -208,6 +208,18 @@ class QuickAgent:
             "last_step_output": last_step_output,
         }
 
+    async def _write_output_handoff(self, output) -> AgentResult:
+        if self._write_output_file:
+            output_file = self.loaded.spec.output.file
+            if output_file is None:
+                raise ValueError("Output file is not configured.")
+            write_output(output_file, output, self.permissions)
+        handoff_output = await self._handle_handoff(output)
+        if handoff_output is not None:
+            return handoff_output
+        return output
+
+
     async def run(self) -> AgentResult:
         self.last_run_metrics = None
         if self.has_tools():
@@ -222,26 +234,9 @@ class QuickAgent:
         self._apply_sample_processing()
         chunk_output = await self._apply_chunk_processing()
         if chunk_output is not None:
-            if self._write_output_file:
-                output_file = self.loaded.spec.output.file
-                if output_file is None:
-                    raise ValueError("Output file is not configured.")
-                write_output(output_file, chunk_output, self.permissions)
-            handoff_output = await self._handle_handoff(chunk_output)
-            if handoff_output is not None:
-                return handoff_output
-            return chunk_output
+            return await self._write_output_handoff(chunk_output)
         if self._is_empty_agent_body():
-            output: AgentResult = self.run_input.text
-            if self._write_output_file:
-                output_file = self.loaded.spec.output.file
-                if output_file is None:
-                    raise ValueError("Output file is not configured.")
-                write_output(output_file, output, self.permissions)
-            handoff_output = await self._handle_handoff(output)
-            if handoff_output is not None:
-                return handoff_output
-            return output
+            return await self._write_output_handoff(self.run_input.text)
 
         try:
             last_step_output = await self._run_chain()
