@@ -96,7 +96,7 @@ resource "aws_iam_user_policy" "deployer" {
         Resource = [
           "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:model-invocation-job/*",
           "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.model_id}",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/qwen.*",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/*",
           "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/*",
           "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:application-inference-profile/*"
         ]

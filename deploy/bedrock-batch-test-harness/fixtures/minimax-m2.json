@@ -1,0 +1,14 @@
+{
+  "agent": "harness-language-extractor",
+  "agents_dir": "deploy/bedrock-batch-test-harness/agents",
+  "tools_dir": "tools",
+  "safe_dir": "safe",
+  "model_id": "minimax.minimax-m2",
+  "role_arn": "",
+  "s3_input_uri": "",
+  "s3_output_uri": "",
+  "input_template": "# Senior Developer Profile\n\nThis candidate is a senior software developer with extensive experience building and maintaining distributed backend and frontend systems. They have delivered production services in Python and Node.js, built modern web applications with TypeScript and React, and implemented data-driven features backed by MongoDB and SQL databases. Their recent projects include machine learning workflows for data analysis, semantic search pipelines with sentence transformer models, and integrations that use large language models for summarization and extraction.",
+  "count": 100,
+  "probe_input": "batch import probe",
+  "job_name_prefix": "quick-agent-batch-100-minimax-m2"
+}
