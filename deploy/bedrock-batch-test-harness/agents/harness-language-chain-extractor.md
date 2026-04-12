@@ -11,27 +11,27 @@ schemas:
   TechKeywords: "schemas.tech_keywords:TechKeywords"
   RandomName: "schemas.tech_keywords:RandomName"
 chain:
-  - id: generate_random_name
+  - id: generate-random-name
     kind: structured
     output_schema: RandomName
-    prompt_section: step:generate_random_name
-  - id: tech_keyword_extraction
+    prompt_section: step:generate-random-name
+  - id: tech-keyword-extraction
     kind: structured
     output_schema: TechKeywords
-    prompt_section: step:tech_keyword_extraction
+    prompt_section: step:tech-keyword-extraction
 
 output:
   format: json
 ---
 
-## step:generate\_random\_name
+## step:generate-random-name
 
 Generate a random first name.
 Return only valid JSON with this exact shape:
 {"name":"\<first\_name>"}
 No markdown, no explanation, no extra keys.
 
-## step:tech\_keyword\_extraction
+## step:tech-keyword-extraction
 
 You extract programming languages and technical skills from candidate writeups.
 Return JSON with keys: `computer_languages` (array of strings), `databases` (array of strings), `other` (array of strings).

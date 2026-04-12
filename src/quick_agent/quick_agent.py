@@ -6,9 +6,7 @@ import inspect
 import json
 import logging
 import os
-import shlex
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict
 from uuid import uuid4
@@ -43,7 +41,7 @@ from quick_agent.exceptions import (
 )
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output
-from quick_agent.json_utils import extract_first_json_object
+from quick_agent.json_utils import extract_first_json_object, json_compatible_value
 from quick_agent.mapping.map_chunks import MapChunks
 from quick_agent.mapping.map_paragraphs import MapParagraphs
 from quick_agent.models.batch_request import (
@@ -60,6 +58,7 @@ from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.prompting import make_user_prompt
+from quick_agent.recorder import ExecutionLogEntry, Recorder
 from quick_agent.samplers.simple_ratios import SampleRatios
 from quick_agent.tools_loader import import_symbol
 from quick_agent.types import AgentResult
@@ -90,87 +89,6 @@ class ToolCallResult:
     name: str
     content: str | None = None
     error: str | None = None
-
-
-class ExecutionLogEntry:
-    def __init__(self, *, request_context: dict[str, object], call_site: str) -> None:
-        self.request_context = request_context
-        self.call_site = call_site
-
-    def _request_from_context(self) -> dict[str, object] | None:
-        request_obj = self.request_context.get("request")
-        if isinstance(request_obj, dict):
-            return request_obj
-        return None
-
-    def _reconstructed_request_from_context(self) -> dict[str, object] | None:
-        base_url_obj = self.request_context.get("base_url")
-        model_name_obj = self.request_context.get("model_name")
-        user_prompt_obj = self.request_context.get("user_prompt")
-        system_prompt_obj = self.request_context.get("system_prompt")
-        instructions_obj = self.request_context.get("instructions")
-        model_settings_obj = self.request_context.get("model_settings")
-        if (
-            not isinstance(base_url_obj, str)
-            or not isinstance(model_name_obj, str)
-            or not isinstance(user_prompt_obj, str)
-        ):
-            return None
-        messages: list[dict[str, str]] = []
-        system_parts: list[str] = []
-        if isinstance(system_prompt_obj, str) and system_prompt_obj:
-            system_parts.append(system_prompt_obj)
-        elif isinstance(system_prompt_obj, list):
-            for item in system_prompt_obj:
-                if isinstance(item, str) and item:
-                    system_parts.append(item)
-        if isinstance(instructions_obj, str) and instructions_obj:
-            system_parts.append(instructions_obj)
-        if system_parts:
-            messages.append({"role": "system", "content": "\n".join(system_parts)})
-        messages.append({"role": "user", "content": user_prompt_obj})
-        body: dict[str, object] = {"model": model_name_obj, "messages": messages}
-        if isinstance(model_settings_obj, dict):
-            extra_body_obj = model_settings_obj.get("extra_body")
-            if isinstance(extra_body_obj, dict):
-                for key, value in extra_body_obj.items():
-                    if key not in body:
-                        body[key] = value
-        base_url = base_url_obj.rstrip("/")
-        if base_url.endswith("/chat/completions"):
-            url = base_url
-        else:
-            url = f"{base_url}/chat/completions"
-        return {
-            "method": "POST",
-            "url": url,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps(body, ensure_ascii=False),
-        }
-
-    def to_curl(self) -> str:
-        request_obj = self._request_from_context()
-        if request_obj is None:
-            request_obj = self._reconstructed_request_from_context()
-        if request_obj is None:
-            return "curl"
-        method_obj = request_obj.get("method")
-        url_obj = request_obj.get("url")
-        headers_obj = request_obj.get("headers")
-        body_obj = request_obj.get("body")
-        if not isinstance(method_obj, str) or not isinstance(url_obj, str):
-            return "curl"
-        command_parts: list[str] = ["curl", "-X", shlex.quote(method_obj)]
-        if isinstance(headers_obj, dict):
-            for key_obj, value_obj in headers_obj.items():
-                if not isinstance(key_obj, str) or not isinstance(value_obj, str):
-                    continue
-                header_value = f"{key_obj}: {value_obj}"
-                command_parts.extend(["-H", shlex.quote(header_value)])
-        if isinstance(body_obj, str) and body_obj:
-            command_parts.extend(["--data-raw", shlex.quote(body_obj)])
-        command_parts.append(shlex.quote(url_obj))
-        return " ".join(command_parts)
 
 
 class QuickAgent:
@@ -218,11 +136,6 @@ class QuickAgent:
         self.toolset: FunctionToolset[Any] | None = self._build_toolset()
         self.model_spec: ModelSpec = model or self.loaded.spec.model
         self._record_http_traffic: bool = record_http_traffic
-        self._http_traffic_entries: list[dict[str, object]] = []
-        self.http_request_log: list[dict[str, object]] = []
-        self.http_response_log: list[dict[str, object]] = []
-        self._http_log_max_entries: int = 200
-        self.execution_log: list[ExecutionLogEntry] = []
 
         headers: dict[str, str] = dict(self.model_spec.extra_headers or {})
         if extra_headers is not None:
@@ -248,14 +161,28 @@ class QuickAgent:
             tool_mode=self.tool_mode,
         )
         self.state: ChainState = self._init_state()
-        self._enable_llm_request_logging: bool = enable_llm_request_logging
         if llm_log_path is None:
             llm_log_path = Path("log/results.log")
-        self._llm_log_path: Path = Path(llm_log_path)
+        self._recorder: Recorder = Recorder(
+            agent_id=self._agent_id,
+            model_spec=self.model_spec,
+            effective_base_url=self._effective_base_url(),
+            tool_ids=self.tool_ids,
+            enable_llm_request_logging=enable_llm_request_logging,
+            llm_log_path=Path(llm_log_path),
+        )
         self.model_settings_json: ModelSettings | None = self._build_model_settings(
             self.model_spec
         )
         self.last_run_metrics: dict[str, object] | None = None
+
+    def __setattr__(self, name: str, value: object) -> None:
+        super().__setattr__(name, value)
+        recorder = getattr(self, "_recorder", None)
+        if not isinstance(recorder, Recorder):
+            return
+        elif name == "client":
+            recorder.effective_base_url = self._effective_base_url()
 
     def load_batch_context(self, *, context: BatchAgentContext) -> None:
         state_obj = context.state
@@ -336,7 +263,7 @@ class QuickAgent:
 
             return final_output
         finally:
-            self._write_llm_request_log(None)
+            self._recorder._write_llm_request_log(None)
 
     def _apply_sample_processing(self) -> None:
         content_processing = self.loaded.spec.content_processing
@@ -500,8 +427,8 @@ class QuickAgent:
         event_hooks: dict[str, list[Callable[..., Any]]] | None = None
         if self._record_http_traffic:
             event_hooks = {
-                "request": [self._record_http_request],
-                "response": [self._record_http_response],
+                "request": [self._recorder._record_http_request],
+                "response": [self._recorder._record_http_response],
             }
 
         if (
@@ -632,7 +559,7 @@ class QuickAgent:
                 },
             }
         request_id = f"{self._agent_id}-{uuid4()}"
-        state_obj = self._json_compatible_value(self.state)
+        state_obj = json_compatible_value(self.state)
         if not isinstance(state_obj, dict):
             raise ValueError("Expected chain state to be a JSON-compatible object.")
         state: dict[str, object] = {}
@@ -788,7 +715,9 @@ class QuickAgent:
             return items
         raise ValueError(f"Unsupported completed batch output type: {type(value)}")
 
-    async def import_result(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
+    async def import_result(
+        self, *, batch_import: BatchImportRequest
+    ) -> BatchImportOutcome:
         outcome = self._import_outcome(batch_import=batch_import)
         if outcome.tool_calls is not None:
             pending = outcome.pending_submit_request
@@ -872,14 +801,16 @@ class QuickAgent:
                         )
                     )
                     continue
+                plain_func: Callable[..., Any] = tool.function
                 if inspect.iscoroutinefunction(tool.function):
-                    output = await tool.function(**args)
+                    output = await plain_func(**args)
                 else:
-                    plain_func: Callable[..., Any] = tool.function
                     output = plain_func(**args)
                 if isinstance(output, dict):
                     text_val = output.get("text")
-                    content = str(text_val) if text_val is not None else json.dumps(output)
+                    content = (
+                        str(text_val) if text_val is not None else json.dumps(output)
+                    )
                 else:
                     content = str(output)
                 logger.info(
@@ -929,7 +860,8 @@ class QuickAgent:
         messages.append(BatchMessage(role="assistant", tool_calls=oa_tool_calls))
 
         for tc, result in zip(tool_calls, executed):
-            tc_name = tc.get("name")
+            tc_name_obj = tc.get("name")
+            tc_name: str | None = tc_name_obj if isinstance(tc_name_obj, str) else None
             content = result.error if result.content is None else result.content
             messages.append(
                 BatchMessage(
@@ -940,7 +872,7 @@ class QuickAgent:
                 )
             )
 
-        state_obj = self._json_compatible_value(self.state)
+        state_obj = json_compatible_value(self.state)
         if not isinstance(state_obj, dict):
             raise ValueError("Expected chain state to be a JSON-compatible object.")
         state: dict[str, object] = {}
@@ -1333,42 +1265,24 @@ class QuickAgent:
                 raise ValueError("Text step expected a string output.")
             return self._parse_structured_result(raw_result, schema_cls)
 
-    def _json_compatible_value(self, value: object) -> object:
-        if value is None:
-            return None
-        if isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, BaseModel):
-            return self._json_compatible_value(value.model_dump(mode="json"))
-        if isinstance(value, dict):
-            converted: dict[str, object] = {}
-            for key, item in value.items():
-                converted[str(key)] = self._json_compatible_value(item)
-            return converted
-        if isinstance(value, list):
-            return [self._json_compatible_value(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._json_compatible_value(item) for item in value]
-        return str(value)
-
     def _normalize_usage_metrics(self, usage: object) -> dict[str, object]:
         usage_dict: dict[str, object] = {}
         if isinstance(usage, dict):
             for key, value in usage.items():
-                usage_dict[str(key)] = self._json_compatible_value(value)
+                usage_dict[str(key)] = json_compatible_value(value)
             return usage_dict
         if isinstance(usage, BaseModel):
             payload = usage.model_dump(exclude_none=True)
             if isinstance(payload, dict):
                 for key, value in payload.items():
-                    usage_dict[str(key)] = self._json_compatible_value(value)
+                    usage_dict[str(key)] = json_compatible_value(value)
             return usage_dict
         model_dump = getattr(usage, "model_dump", None)
         if callable(model_dump):
             payload = model_dump(exclude_none=True)
             if isinstance(payload, dict):
                 for key, value in payload.items():
-                    usage_dict[str(key)] = self._json_compatible_value(value)
+                    usage_dict[str(key)] = json_compatible_value(value)
                 return usage_dict
         return usage_dict
 
@@ -1427,164 +1341,41 @@ class QuickAgent:
             return str(self.client.base_url).rstrip("/")
         return self.model_spec.base_url.rstrip("/")
 
-    def _record_llm_request(
-        self,
-        *,
-        call_site: str,
-        step_id: str | None,
-        step_kind: str,
-        output_schema: str | None,
-        instructions: str | None,
-        system_prompt: str | list[str],
-        user_prompt: str,
-        model_settings: ModelSettings | None,
-    ) -> None:
-        self._record_execution_log(
-            call_site=call_site,
-            instructions=instructions,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model_settings=model_settings,
-        )
-        payload: dict[str, object] = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "request_state": "before_request_start",
-            "agent_id": self._agent_id,
-            "model": {
-                "provider": self.model_spec.provider,
-                "base_url": self._effective_base_url(),
-                "model_name": self.model_spec.model_name,
-            },
-            "step": {
-                "id": step_id,
-                "kind": step_kind,
-                "output_schema": output_schema,
-            },
-            "call_site": call_site,
-            "system_prompt": system_prompt,
-            "instructions": instructions,
-            "user_prompt": user_prompt,
-            "model_settings": self._json_compatible_value(model_settings),
-            "tool_ids": self.tool_ids,
-        }
-        self._write_llm_request_log(payload)
+    @property
+    def execution_log(self) -> list[ExecutionLogEntry]:
+        return self._recorder.execution_log
 
-    def _write_llm_request_log(self, payload: dict[str, object] | None) -> None:
-        prefix = "QuickAgent._write_llm_request_log"
-        if not self._enable_llm_request_logging or payload is None:
-            return
-        try:
-            self._llm_log_path.parent.mkdir(parents=True, exist_ok=True)
-            entry = json.dumps(payload, indent=2)
-            with self._llm_log_path.open("a", encoding="utf-8") as log_file:
-                log_file.write("[LLM_REQUEST]\n")
-                log_file.write(entry)
-                log_file.write("\n\n")
-        except OSError:
-            logger.exception(
-                "%s: file=%s > Failed to write LLM request log",
-                prefix,
-                self._llm_log_path,
-            )
+    @property
+    def http_request_log(self) -> list[dict[str, object]]:
+        return self._recorder.http_request_log
 
-    def _decode_http_bytes(self, value: bytes) -> str:
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
-            return value.decode("utf-8", errors="replace")
+    @property
+    def http_response_log(self) -> list[dict[str, object]]:
+        return self._recorder.http_response_log
 
-    def _record_http_traffic_entry(self, entry: dict[str, object]) -> None:
-        self._http_traffic_entries.append(entry)
-        if len(self._http_traffic_entries) > self._http_log_max_entries:
-            del self._http_traffic_entries[0]
+    @property
+    def _enable_llm_request_logging(self) -> bool:
+        return self._recorder._enable_llm_request_logging
 
-    def _record_http_request_entry(self, request_entry: dict[str, object]) -> None:
-        self.http_request_log.append(request_entry)
-        if len(self.http_request_log) > self._http_log_max_entries:
-            del self.http_request_log[0]
+    @_enable_llm_request_logging.setter
+    def _enable_llm_request_logging(self, value: bool) -> None:
+        self._recorder._enable_llm_request_logging = value
 
-    def _record_http_response_entry(self, response_entry: dict[str, object]) -> None:
-        self.http_response_log.append(response_entry)
-        if len(self.http_response_log) > self._http_log_max_entries:
-            del self.http_response_log[0]
+    @property
+    def _llm_log_path(self) -> Path:
+        return self._recorder._llm_log_path
 
-    async def _record_http_request(self, request: httpx.Request) -> None:
-        request_body: str | None = None
-        if request.content:
-            request_body = self._decode_http_bytes(request.content)
-        entry: dict[str, object] = {
-            "event": "request",
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "request": {
-                "method": request.method,
-                "url": str(request.url),
-                "headers": dict(request.headers),
-                "body": request_body,
-            },
-        }
-        request_obj = entry.get("request")
-        if isinstance(request_obj, dict):
-            self._record_http_request_entry(request_obj)
-        self._record_http_traffic_entry(entry)
+    @_llm_log_path.setter
+    def _llm_log_path(self, path: Path) -> None:
+        self._recorder._llm_log_path = path
 
-    async def _record_http_response(self, response: httpx.Response) -> None:
-        response_body: str | None = None
-        response_content = await response.aread()
-        if response_content:
-            response_body = self._decode_http_bytes(response_content)
-        request_body: str | None = None
-        if response.request.content:
-            request_body = self._decode_http_bytes(response.request.content)
-        entry: dict[str, object] = {
-            "event": "response",
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "request": {
-                "method": response.request.method,
-                "url": str(response.request.url),
-                "headers": dict(response.request.headers),
-                "body": request_body,
-            },
-            "response": {
-                "status_code": response.status_code,
-                "headers": dict(response.headers),
-                "body": response_body,
-            },
-        }
-        response_obj = entry.get("response")
-        if isinstance(response_obj, dict):
-            self._record_http_response_entry(response_obj)
-        self._record_http_traffic_entry(entry)
+    @property
+    def _http_traffic_entries(self) -> list[dict[str, object]]:
+        return self._recorder._http_traffic_entries
 
-    def _last_http_exchange_context(self) -> dict[str, object]:
-        if self.http_request_log:
-            context: dict[str, object] = {
-                "request": self.http_request_log[-1],
-                "request_source": "quick_agent_http_traffic_log",
-            }
-            if self.http_response_log:
-                context["response"] = self.http_response_log[-1]
-            return context
-        for entry in reversed(self._http_traffic_entries):
-            if entry.get("event") == "response":
-                request_obj = entry.get("request")
-                response_obj = entry.get("response")
-                if isinstance(request_obj, dict):
-                    exchange_context: dict[str, object] = {
-                        "request": request_obj,
-                        "request_source": "quick_agent_http_traffic_log",
-                    }
-                    if isinstance(response_obj, dict):
-                        exchange_context["response"] = response_obj
-                    return exchange_context
-        for entry in reversed(self._http_traffic_entries):
-            if entry.get("event") == "request":
-                request_obj = entry.get("request")
-                if isinstance(request_obj, dict):
-                    return {
-                        "request": request_obj,
-                        "request_source": "quick_agent_http_traffic_log",
-                    }
-        return {}
+    @_http_traffic_entries.setter
+    def _http_traffic_entries(self, entries: list[dict[str, object]]) -> None:
+        self._recorder._http_traffic_entries = entries
 
     def _unexpected_model_behavior_request_context(
         self,
@@ -1600,32 +1391,10 @@ class QuickAgent:
             "instructions": instructions,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
-            "model_settings": self._json_compatible_value(model_settings),
+            "model_settings": json_compatible_value(model_settings),
         }
-        context.update(self._last_http_exchange_context())
+        context.update(self._recorder._last_http_exchange_context())
         return context
-
-    def _record_execution_log(
-        self,
-        *,
-        call_site: str,
-        instructions: str | None,
-        system_prompt: str | list[str],
-        user_prompt: str,
-        model_settings: ModelSettings | None,
-    ) -> dict[str, object]:
-        request_context = self._unexpected_model_behavior_request_context(
-            instructions=instructions,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model_settings=model_settings,
-        )
-        self.execution_log.append(
-            ExecutionLogEntry(request_context=request_context, call_site=call_site)
-        )
-        if len(self.execution_log) > self._http_log_max_entries:
-            del self.execution_log[0]
-        return request_context
 
     async def _run_text_step(
         self,
@@ -1636,7 +1405,7 @@ class QuickAgent:
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
-        self._record_llm_request(
+        self._recorder._record_llm_request(
             call_site="run_text_step",
             step_id=step.id,
             step_kind=step.kind,
@@ -1684,7 +1453,7 @@ class QuickAgent:
             model_settings = self._build_structured_model_settings(
                 schema_cls=schema_cls
             )
-        self._record_llm_request(
+        self._recorder._record_llm_request(
             call_site="run_single_shot",
             step_id=None,
             step_kind="single_shot",
@@ -1723,7 +1492,7 @@ class QuickAgent:
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
         step_instructions = self._build_step_instructions(step_prompt)
-        self._record_llm_request(
+        self._recorder._record_llm_request(
             call_site="run_structured_step",
             step_id=step.id,
             step_kind=step.kind,

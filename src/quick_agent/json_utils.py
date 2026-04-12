@@ -35,3 +35,25 @@ def extract_first_json_object(text: str) -> str:
                     return text[start : i + 1]
 
     raise ValueError("Unbalanced JSON object in model output.")
+
+
+def json_compatible_value(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        converted: dict[str, object] = {}
+        for key, item in value.items():
+            converted[str(key)] = json_compatible_value(item)
+        return converted
+    if isinstance(value, list):
+        return [json_compatible_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_compatible_value(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        payload = model_dump(mode="json")
+        if isinstance(payload, dict):
+            return json_compatible_value(payload)
+    return str(value)

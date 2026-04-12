@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 REQUIRED_LANGUAGES = {"python", "typescript"}
 REQUIRED_DATABASES = {"mongodb", "sql"}
 CHAIN_AGENT_ID = "harness-language-chain-extractor"
-CHAIN_FIRST_STEP_ID = "generate_random_name"
-CHAIN_SECOND_STEP_ID = "tech_keyword_extraction"
+CHAIN_FIRST_STEP_ID = "generate-random-name"
+CHAIN_SECOND_STEP_ID = "tech-keyword-extraction"
 
 
 def _normalize(value: str) -> str:

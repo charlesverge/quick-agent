@@ -2211,7 +2211,7 @@ def test_execution_log_entry_to_curl_reconstructs_when_request_missing() -> None
 def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
     qa = _make_quick_agent_for_test()
     qa.model_spec = ModelSpec(base_url="http://localhost:11434", model_name="m")
-    qa._record_llm_request(
+    qa._recorder._record_llm_request(
         call_site="run_single_shot",
         step_id=None,
         step_kind="single_shot",
@@ -2296,13 +2296,13 @@ async def test_http_hook_recorders_store_entries_on_quick_agent() -> None:
         headers={"x-response-id": "resp-1"},
         content=b'{"id":"ok"}',
     )
-    await qa._record_http_request(request)
-    await qa._record_http_response(response)
+    await qa._recorder._record_http_request(request)
+    await qa._recorder._record_http_response(response)
     assert len(qa.http_request_log) == 1
     assert len(qa.http_response_log) == 1
     assert qa.http_request_log[0]["method"] == "POST"
     assert qa.http_response_log[0]["status_code"] == 200
-    context = qa._last_http_exchange_context()
+    context = qa._recorder._last_http_exchange_context()
     assert context["request_source"] == "quick_agent_http_traffic_log"
     assert context["request"] == qa.http_request_log[-1]
     assert context["response"] == qa.http_response_log[-1]
