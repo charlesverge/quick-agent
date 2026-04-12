@@ -422,8 +422,8 @@ Then respond with only the returned text value.
     assert output == "pong"
     assert not child_output.exists()
 
-
-def test_orchestrator_allows_nested_output_file(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_orchestrator_allows_nested_output_file(tmp_path: Path) -> None:
     _require_env("OPENAI_API_KEY")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
@@ -438,6 +438,9 @@ chain:
   - id: respond
     kind: text
     prompt_section: step:respond
+    output_schema: ResultOutput
+schemas:
+  ResultOutput: "quick_agent.schemas.outputs:ResultOutput"
 output:
   format: json
   file: {child_output}
@@ -445,7 +448,7 @@ output:
 
 ## step:respond
 
-Reply with exactly: pong
+Reply with exactly: result as pong
 """
     (agents_dir / "child.md").write_text(child_md, encoding="utf-8")
 
@@ -459,6 +462,9 @@ chain:
   - id: invoke
     kind: text
     prompt_section: step:invoke
+    output_schema: ResultOutput
+schemas:
+  ResultOutput: "quick_agent.schemas.outputs:ResultOutput"
 output:
   format: json
   file: {parent_output}
@@ -480,10 +486,9 @@ Then respond with only the returned text value.
         safe_dir=safe_root,
     )
 
-    import anyio
-
-    output = anyio.run(_run_agent, orchestrator, "parent", parent_input)
-    assert output == "pong"
+    output = await orchestrator.run("parent", parent_input)
+    assert output
+    assert output.get("result") == "pong"
     assert child_output.exists()
 
 

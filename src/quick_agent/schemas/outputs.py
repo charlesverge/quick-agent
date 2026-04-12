@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, AliasChoices
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class Plan(BaseModel):
@@ -59,3 +59,6 @@ class ContainsValidationResult(BaseModel):
     missing: list[str] = Field(default_factory=list)
     eval_path: str | None = None
     response_path: str | None = None
+
+class ResultOutput(BaseModel):
+    result: str
