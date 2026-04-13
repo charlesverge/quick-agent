@@ -5,5 +5,12 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.read_text",
     "function": "read_text"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string"}
+    },
+    "required": ["path"]
   }
 }

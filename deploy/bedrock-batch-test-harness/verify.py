@@ -21,6 +21,10 @@ REQUIRED_DATABASES = {"mongodb", "sql"}
 CHAIN_AGENT_ID = "harness-language-chain-extractor"
 CHAIN_FIRST_STEP_ID = "generate-random-name"
 CHAIN_SECOND_STEP_ID = "tech-keyword-extraction"
+FILE_MANAGER_AGENT_ID = "file_manager_agent"
+FILE_MANAGER_INDEX = 2
+FILE_MANAGER_DIRECTORY = "bedrock"
+FILE_MANAGER_APPEND_TEXT = "harness probe"
 
 
 def _normalize(value: str) -> str:
@@ -189,6 +193,7 @@ def _validate_submit_rows(
     ids: set[str] = set()
     root_chain_id = ""
     chain_follow_up_found = False
+    file_manager_follow_up_found = False
     index = 0
     while index < len(rows):
         row = rows[index]
@@ -209,6 +214,17 @@ def _validate_submit_rows(
                     f"{context}: expected second submit row step_id={CHAIN_FIRST_STEP_ID}, got {step_id}"
                 )
             root_chain_id = request_id
+        if index == FILE_MANAGER_INDEX:
+            if agent_id != FILE_MANAGER_AGENT_ID:
+                raise ValueError(
+                    f"{context}: expected submit row index={FILE_MANAGER_INDEX} agent_id={FILE_MANAGER_AGENT_ID}, got {agent_id}"
+                )
+            if row.get("tool_use_enabled") is not True:
+                raise ValueError(
+                    f"{context}: expected submit row index={FILE_MANAGER_INDEX} tool_use_enabled=True"
+                )
+        if agent_id == FILE_MANAGER_AGENT_ID and index >= expected_count:
+            file_manager_follow_up_found = True
         if (
             agent_id == CHAIN_AGENT_ID
             and step_id == CHAIN_SECOND_STEP_ID
@@ -237,6 +253,10 @@ def _validate_submit_rows(
         raise ValueError(
             "missing chain follow-up submit request with random-name state"
         )
+    if not file_manager_follow_up_found:
+        raise ValueError(
+            "missing file manager follow-up submit request with tool results"
+        )
     return ids, root_chain_id
 
 
@@ -263,6 +283,22 @@ def _validate_outcome_rows(
             raise ValueError(
                 f"{context}: next_request is not expected in this harness flow"
             )
+        if index == FILE_MANAGER_INDEX:
+            result = row["result"]
+            if not isinstance(result, str) or not result.strip():
+                raise ValueError(f"{context}: file manager result must be a non-empty string")
+            lower = result.lower()
+            if FILE_MANAGER_DIRECTORY not in lower:
+                raise ValueError(
+                    f"{context}: file manager result missing expected directory={FILE_MANAGER_DIRECTORY!r}"
+                )
+            if FILE_MANAGER_APPEND_TEXT not in lower:
+                raise ValueError(
+                    f"{context}: file manager result missing append confirmation={FILE_MANAGER_APPEND_TEXT!r}"
+                )
+            warnings_by_index[index] = []
+            index += 1
+            continue
         tech_keywords = _parse_tech_keywords(row["result"], context=context)
         row_warnings = _validate_tech_keywords(tech_keywords, context=context)
         warnings_by_index[index] = row_warnings

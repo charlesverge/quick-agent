@@ -5,5 +5,13 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.append_text",
     "function": "append_text"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string"},
+      "content": {"type": "string"}
+    },
+    "required": ["path", "content"]
   }
 }

@@ -1,9 +1,17 @@
 {
   "name": "filesystem_write_text",
-  "description": "Write a UTF-8 text file to disk. Returns the written path.",
+  "description": "Write UTF-8 text to a file. Creates or overwrites the file. Returns the file path.",
   "impl": {
     "kind": "python",
     "module": "quick_agent.tools.filesystem.write_text",
     "function": "write_text"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string"},
+      "content": {"type": "string"}
+    },
+    "required": ["path", "content"]
   }
 }

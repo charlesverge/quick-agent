@@ -10,6 +10,7 @@ from typing import Any
 from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.models.batch_request import BatchToolDefinition
 from quick_agent.models.tool_json import ToolJson
 from quick_agent.tools.filesystem.adapter import FilesystemToolAdapter
 from quick_agent.tools.shell.adapter import ShellToolAdapter
@@ -26,8 +27,8 @@ def import_symbol(path: str) -> Any:
     return getattr(module, sym)
 
 
-def _discover_tool_index(tool_roots: list[Path]) -> dict[str, Path]:
-    index: dict[str, Path] = {}
+def _discover_tool_index(tool_roots: list[Path]) -> dict[str, ToolJson]:
+    index: dict[str, ToolJson] = {}
     for root in tool_roots:
         if not root.exists():
             continue
@@ -37,8 +38,26 @@ def _discover_tool_index(tool_roots: list[Path]) -> dict[str, Path]:
                 raise ValueError(f"Tool name {tool_obj.name!r} must not contain '.'.")
             if tool_obj.name in index:
                 continue
-            index[tool_obj.name] = tool_json_path
+            index[tool_obj.name] = tool_obj
     return index
+
+
+def load_tool_definitions(
+    tool_roots: list[Path],
+    tool_names: list[str],
+) -> list[BatchToolDefinition]:
+    tool_index = _discover_tool_index(tool_roots)
+    result: list[BatchToolDefinition] = []
+    for tool_name in tool_names:
+        tool_obj = tool_index.get(tool_name)
+        if tool_obj is None:
+            raise FileNotFoundError(f"Missing tool.json for tool {tool_name} in roots: {tool_roots}")
+        result.append(BatchToolDefinition(
+            name=tool_obj.name,
+            description=tool_obj.description,
+            input_schema=tool_obj.input_schema,
+        ))
+    return result
 
 
 def load_tools(
@@ -56,11 +75,10 @@ def load_tools(
     shell_adapter = ShellToolAdapter(permissions)
 
     for tool_name in tool_names:
-        tool_json_path = tool_index.get(tool_name)
-        if tool_json_path is None:
+        tool_obj = tool_index.get(tool_name)
+        if tool_obj is None:
             raise FileNotFoundError(f"Missing tool.json for tool {tool_name} in roots: {tool_roots}")
 
-        tool_obj = ToolJson.model_validate_json(tool_json_path.read_text(encoding="utf-8"))
         if tool_obj.impl.kind != "python":
             raise NotImplementedError("Skeleton supports python tools only. Add MCP support next.")
 

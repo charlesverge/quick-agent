@@ -39,7 +39,9 @@ from quick_agent.models.batch_request import (
     BatchMessage,
     BatchModelConfig,
     BatchSubmitRequest,
+    BatchToolDefinition,
 )
+from quick_agent.tools_loader import load_tool_definitions
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
@@ -493,6 +495,8 @@ class QuickAgent:
             ),
             response_format=response_format,
             tool_ids=list(self.tool_ids),
+            tools=self._batch_tools() or None,
+            tool_use_enabled=bool(self.tool_ids),
             context=BatchAgentContext(
                 input_text=self.run_input.text,
                 state=state,
@@ -1093,6 +1097,12 @@ class QuickAgent:
         if not self.has_tools():
             return None
         return self._tools.build_toolset(self.tool_ids, self.permissions)
+
+    def _batch_tools(self) -> list[BatchToolDefinition]:
+        tool_ids = [t for t in self.tool_ids if t != "agent_call"]
+        if not tool_ids or not self._tools._tool_roots:
+            return []
+        return load_tool_definitions(self._tools._tool_roots, tool_ids)
 
     def _toolsets_for_run(self) -> list[FunctionToolset[Any]]:
         if not self.has_tools():

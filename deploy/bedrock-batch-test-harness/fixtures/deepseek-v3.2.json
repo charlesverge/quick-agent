@@ -1,7 +1,7 @@
 {
   "agent": "harness-language-extractor",
   "agents_dir": "deploy/bedrock-batch-test-harness/agents",
-  "tools_dir": "tools",
+  "tools_dir": "src/quick_agent/tools",
   "safe_dir": "safe",
   "model_id": "deepseek.v3.2",
   "role_arn": "",

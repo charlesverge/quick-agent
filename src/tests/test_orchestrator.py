@@ -2930,6 +2930,66 @@ def test_create_batch_request_for_current_step() -> None:
     assert request.messages[1].content == "input prompt"
 
 
+def test_create_batch_request_includes_tool_definitions() -> None:
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test()
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id=None,
+        step_kind="single_shot",
+        output_schema=None,
+        instructions=None,
+        system_prompt="sys",
+        user_prompt="input",
+        model_settings=None,
+    )
+
+    assert request.tool_use_enabled is True
+    assert request.tools is not None
+    assert len(request.tools) == 1
+    assert request.tools[0].name == "filesystem_list_files"
+    properties = request.tools[0].input_schema.get("properties")
+    assert isinstance(properties, dict)
+    assert "directory" in properties
+
+
+def test_batch_submit_converse_jsonl_includes_tool_config() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-tools",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="filesystem_list_files",
+                description="List files",
+                input_schema={"type": "object", "properties": {"directory": {"type": "string"}}, "required": ["directory"]},
+            )
+        ],
+        tool_use_enabled=True,
+    )
+
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    tool_config = model_input.get("toolConfig")
+    assert isinstance(tool_config, dict)
+    tools = tool_config.get("tools")
+    assert isinstance(tools, list)
+    assert len(tools) == 1
+    assert isinstance(tools[0], dict)
+    assert tools[0]["toolSpec"]["name"] == "filesystem_list_files"
+
+
 def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> None:
     request = BatchSubmitRequest(
         request_id="r1",

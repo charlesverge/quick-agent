@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import anyio
+from settings import HarnessSettings, resolve_runtime_settings, write_runtime_settings
+from utils import run_aws, write_jsonl
 
 from quick_agent.input_adaptors import TextInput
 from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.orchestrator import Orchestrator
-from settings import HarnessSettings
-from settings import resolve_runtime_settings
-from settings import write_runtime_settings
-from utils import run_aws
-from utils import write_jsonl
 
 CHAIN_AGENT_ID = "harness-language-chain-extractor"
+FILE_MANAGER_AGENT_ID = "harness-file-manager"
+FILE_MANAGER_INPUT = '{"directory": "bedrock", "search_name": "input", "append_text": "harness text\\n"}'
 
 
 async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]:
-    if settings.count < 2:
-        raise ValueError("Harness count must be at least 2 for chain-agent coverage.")
+    if settings.count < 3:
+        raise ValueError("Harness count must be at least 3 for chain-agent and file-manager coverage.")
     orchestrator = Orchestrator(
         [settings.agents_dir], [settings.tools_dir], safe_dir=settings.safe_dir
     )
@@ -28,6 +27,8 @@ async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]
         input_text = settings.input_template.format(i=index)
         if index == 1:
             request = await orchestrator.batch(CHAIN_AGENT_ID, TextInput(input_text))
+        elif index == 2:
+            request = await orchestrator.batch(FILE_MANAGER_AGENT_ID, TextInput(FILE_MANAGER_INPUT))
         else:
             request = await orchestrator.batch(settings.agent, TextInput(input_text))
         requests.append(request)
