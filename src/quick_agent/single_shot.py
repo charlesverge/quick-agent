@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Type
 
 import openai
@@ -14,16 +13,15 @@ from openai.types.chat import (
 from openai.types.shared_params.response_format_json_schema import (
     ResponseFormatJSONSchema,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.settings import ModelSettings
 
+from quick_agent.agent_utils import parse_structured_result
 from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
 )
-from quick_agent.json_utils import extract_first_json_object
-from quick_agent.types import AgentResult
 
 if TYPE_CHECKING:
     from quick_agent.quick_agent import QuickAgent
@@ -70,22 +68,6 @@ def _extract_openai_error_message(error: openai.APIStatusError) -> str:
     return str(error)
 
 
-def _parse_structured_result(
-    raw_output: AgentResult, schema_cls: Type[BaseModel]
-) -> BaseModel:
-    if isinstance(raw_output, BaseModel):
-        return raw_output
-    try:
-        if isinstance(raw_output, str):
-            return schema_cls.model_validate_json(raw_output)
-        return schema_cls.model_validate(raw_output)
-    except ValidationError:
-        if isinstance(raw_output, str):
-            extracted = extract_first_json_object(raw_output)
-            return schema_cls.model_validate_json(extracted)
-        raise
-
-
 async def _run_single_shot_text_via_pydantic_ai(
     agent: QuickAgent,
     *,
@@ -96,7 +78,7 @@ async def _run_single_shot_text_via_pydantic_ai(
 ) -> str:
     toolsets = agent._toolsets_for_run()
     runner = Agent(
-        agent.model,
+        agent._executor.context.model,
         instructions=instructions,
         system_prompt=system_prompt,
         toolsets=toolsets,
@@ -122,7 +104,7 @@ async def _run_single_shot_structured_via_pydantic_ai(
 ) -> BaseModel:
     toolsets = agent._toolsets_for_run()
     runner = Agent(
-        agent.model,
+        agent._executor.context.model,
         instructions=instructions,
         system_prompt=system_prompt,
         toolsets=toolsets,
@@ -134,7 +116,7 @@ async def _run_single_shot_structured_via_pydantic_ai(
     except ModelHTTPError as error:
         raise error
     agent._capture_pydantic_ai_metrics(result)
-    return _parse_structured_result(result.output, schema_cls)
+    return parse_structured_result(result.output, schema_cls)
 
 
 async def _run_single_shot_structured_via_openai_sdk(
@@ -150,14 +132,7 @@ async def _run_single_shot_structured_via_openai_sdk(
         raise ValueError(
             "output.output_schema does not support tools in single-shot mode."
         )
-    api_key = os.environ.get(agent.model_spec.api_key_env, "noop")
-    timeout_seconds = agent.model_spec.timeout_seconds
-    client = agent.client or openai.AsyncOpenAI(
-        api_key=api_key,
-        base_url=agent.model_spec.base_url,
-        timeout=timeout_seconds,
-        http_client=agent._http_client,
-    )
+    client = agent._executor.context.build_client(agent._executor.config)
     messages = _single_shot_messages(
         instructions=instructions,
         system_prompt=system_prompt,
@@ -205,7 +180,7 @@ async def _run_single_shot_structured_via_openai_sdk(
         if refusal_obj:
             raise ValueError(f"Model refused structured response: {refusal_obj}")
         raise ValueError("Model returned an empty structured response.")
-    return _parse_structured_result(content_obj, schema_cls)
+    return parse_structured_result(content_obj, schema_cls)
 
 
 async def run_single_shot(
@@ -214,11 +189,13 @@ async def run_single_shot(
     user_prompt = agent._build_single_shot_prompt()
     instructions = agent.loaded.instructions
     system_prompt = agent.loaded.system_prompt
-    model_settings = agent.model_settings_json
+    model_settings = agent._executor.context.model_settings_json
     if schema_cls is not None:
-        model_settings = agent._build_structured_model_settings(schema_cls=schema_cls)
+        model_settings = agent._executor.context.build_structured_model_settings(
+            schema_cls=schema_cls
+        )
 
-    agent._record_llm_request(
+    agent._recorder._record_llm_request(
         call_site="run_single_shot",
         step_id=None,
         step_kind="single_shot",

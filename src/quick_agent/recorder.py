@@ -7,6 +7,7 @@ import logging
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import httpx
 from pydantic_ai.settings import ModelSettings
@@ -15,6 +16,21 @@ from quick_agent.json_utils import json_compatible_value
 from quick_agent.models.model_spec import ModelSpec
 
 logger = logging.getLogger(__name__)
+
+
+class ExecutorConfigLike(Protocol):
+    agent_id: str
+    model_spec: ModelSpec
+    tool_ids: list[str]
+
+
+class ExecutorContextLike(Protocol):
+    effective_base_url: str
+
+
+class ExecutorLike(Protocol):
+    config: Any
+    context: Any
 
 
 class ExecutionLogEntry:
@@ -102,22 +118,22 @@ class Recorder:
     def __init__(
         self,
         *,
-        agent_id: str,
-        model_spec: ModelSpec,
-        effective_base_url: str,
-        tool_ids: list[str],
+        executor: ExecutorLike,
         http_log_max_entries: int = 200,
         enable_llm_request_logging: bool = False,
-        llm_log_path: Path | None = None,
+        llm_log_path: str | Path | None = None,
     ) -> None:
-        self._agent_id = agent_id
-        self.model_spec = model_spec
-        self.effective_base_url = effective_base_url
-        self.tool_ids = tool_ids
+        self._executor = executor
+        executor_config = cast(ExecutorConfigLike, executor.config)
+        executor_context = cast(ExecutorContextLike, executor.context)
+        self._agent_id = executor_config.agent_id
+        self.model_spec = executor_config.model_spec
+        self.effective_base_url = executor_context.effective_base_url
+        self.tool_ids = executor_config.tool_ids
         self._http_log_max_entries = http_log_max_entries
         self._http_traffic_entries: list[dict[str, object]] = []
         self._enable_llm_request_logging = enable_llm_request_logging
-        self._llm_log_path = llm_log_path or Path("log/results.log")
+        self._llm_log_path = Path(llm_log_path) if llm_log_path is not None else Path("log/results.log")
         self.http_request_log: list[dict[str, object]] = []
         self.http_response_log: list[dict[str, object]] = []
         self.execution_log: list[ExecutionLogEntry] = []

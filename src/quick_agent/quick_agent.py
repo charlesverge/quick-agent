@@ -2,42 +2,31 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import logging
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict
 from uuid import uuid4
 
 import httpx
-import openai
 from httpx._config import DEFAULT_LIMITS
-from openai.types.chat import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionFunctionToolParam,
-    ChatCompletionMessageParam,
-    ChatCompletionSystemMessageParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionToolUnionParam,
-    ChatCompletionUserMessageParam,
-)
-from openai.types.shared_params.function_definition import FunctionDefinition
+import openai
 from pydantic import BaseModel, JsonValue
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
-from quick_agent.agent_model_utils import build_model, resolve_schema
+from quick_agent.agent_config import AgentConfig
+from quick_agent.agent_model_utils import resolve_schema
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
-from quick_agent.directory_permissions import DirectoryPermissions
-from quick_agent.exceptions import (
-    QuickAgentChatNotSupportedException,
-    QuickAgentException,
-    QuickAgentToolsNotSupportedException,
+from quick_agent.agent_utils import (
+    agent_results_to_str,
+    extract_finish_reason,
+    normalize_usage_metrics,
+    parse_structured_result,
 )
+from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.executor import AgentExecutor
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output as write_text
 from quick_agent.json_utils import extract_first_json_object, json_compatible_value
@@ -82,14 +71,6 @@ class ToolRunDeps(TypedDict):
     memory: dict[str, Any]
 
 
-@dataclass
-class ToolCallResult:
-    id: str
-    name: str
-    content: str | None = None
-    error: str | None = None
-
-
 class QuickAgent:
     def __init__(
         self,
@@ -113,10 +94,10 @@ class QuickAgent:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
         self._directory_permissions: DirectoryPermissions = directory_permissions
-        self._agent_id: str = agent_id
         self._input_data: InputAdaptor | Path = input_data
         self._extra_tools: list[str] | None = extra_tools
-        self.loaded: LoadedAgentFile = self._registry.get(self._agent_id)
+        self._param_extra_headers: dict[str, str] | None = extra_headers
+        self.loaded: LoadedAgentFile = self._registry.get(agent_id)
         output_file = self.loaded.spec.output.file
         self._write_output_file: bool = write_output and bool(output_file)
         safe_dir = self.loaded.spec.safe_dir
@@ -134,46 +115,69 @@ class QuickAgent:
         self.tool_ids: list[str] = self._build_tool_ids()
         self.toolset: FunctionToolset[Any] | None = self._build_toolset()
         self.model_spec: ModelSpec = model or self.loaded.spec.model
+        self.extra_headers = self._merge_extra_headers()
         self._record_http_traffic: bool = record_http_traffic
 
-        headers: dict[str, str] = dict(self.model_spec.extra_headers or {})
-        if extra_headers is not None:
-            headers.update(extra_headers)
-        self.extra_headers = headers
-
-        new_extra_body: dict[str, JsonValue] = dict(self.model_spec.extra_body or {})
-        if extra_body is not None:
-            new_extra_body.update(extra_body)
-        self.extra_body: dict[str, JsonValue] = new_extra_body
         self._memory: dict[str, Any] = memory if memory is not None else {}
-        self.client: openai.AsyncOpenAI | None = client
 
-        self._http_client: httpx.AsyncClient | None = self._build_http_client()
         self.tool_mode: str = self.loaded.spec.tool_mode
-        logger.info(
-            f"Initialized QuickAgent {self._agent_id}, tool_mode: {self.tool_mode}"
-        )
-        self.model: OpenAIChatModel = build_model(
-            self.model_spec,
-            http_client=self._http_client,
-            client=self.client,
-            tool_mode=self.tool_mode,
-        )
-        self.state: ChainState = self._init_state()
-        if llm_log_path is None:
-            llm_log_path = Path("log/results.log")
-        self._recorder: Recorder = Recorder(
-            agent_id=self._agent_id,
-            model_spec=self.model_spec,
-            effective_base_url=self._effective_base_url(),
+        logger.info(f"Initialized QuickAgent {agent_id}, tool_mode: {self.tool_mode}")
+        self.state: ChainState = self._init_state(agent_id=agent_id)
+        self._http_client = self._build_http_client()
+        executor_config = AgentConfig(
+            agent_id=agent_id,
+            toolset=self.toolset,
             tool_ids=self.tool_ids,
+            memory=self._memory,
+            model_spec=self.model_spec,
+            client=client,
+            http_client=self._http_client,
+            tool_mode=self.tool_mode,
+            extra_headers=extra_headers,
+            extra_body=extra_body,
+            record_http_traffic=self._record_http_traffic,
+            run_input=self.run_input,
+            loaded=self.loaded,
+            extra_tools=self._extra_tools,
+            recorder=None,
+            state=self.state,
+            import_outcome=self._import_outcome,
+        )
+        self._executor = AgentExecutor(config=executor_config)
+        self._recorder: Recorder = Recorder(
+            executor=self._executor,
             enable_llm_request_logging=enable_llm_request_logging,
-            llm_log_path=Path(llm_log_path),
+            llm_log_path=llm_log_path,
         )
-        self.model_settings_json: ModelSettings | None = self._build_model_settings(
-            self.model_spec
-        )
+        self._executor.config.recorder = self._recorder
+        if self._record_http_traffic and self._executor.context.http_client is not None:
+            self._executor.context.http_client.event_hooks = {
+                "request": [self._recorder._record_http_request],
+                "response": [self._recorder._record_http_response],
+            }
         self.last_run_metrics: dict[str, object] | None = None
+
+    def _build_http_client(self) -> httpx.AsyncClient | None:
+        timeout_seconds = self.model_spec.timeout_seconds or 60.0
+        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
+        limits: httpx.Limits = DEFAULT_LIMITS
+        if keepalive_expiry_seconds is not None:
+            limits = httpx.Limits(
+                max_connections=100, keepalive_expiry=keepalive_expiry_seconds
+            )
+
+        headers = self.extra_headers if self.extra_headers else None
+        return httpx.AsyncClient(
+            timeout=timeout_seconds,
+            limits=limits,
+            headers=headers,
+        )
+
+    def _merge_extra_headers(self) -> dict[str, str] | None:
+        merged_headers = dict(self.model_spec.extra_headers or {})
+        if self._param_extra_headers is not None:
+            merged_headers.update(self._param_extra_headers)
+        return merged_headers if merged_headers else None
 
     def load_batch_context(self, *, context: BatchAgentContext) -> None:
         state_obj = context.state
@@ -219,9 +223,8 @@ class QuickAgent:
             return handoff_output
         return output
 
-
     async def run(self) -> AgentResult:
-        self.last_run_metrics = None
+        self._executor.last_run_metrics = None
         if self.has_tools():
             if self.toolset is None:
                 raise ValueError("Toolset is missing while tools are enabled.")
@@ -299,7 +302,7 @@ class QuickAgent:
             registry=self._registry,
             tools=self._tools,
             directory_permissions=self._directory_permissions,
-            agent_id=self._agent_id,
+            agent_id=self._executor.config.agent_id,
             input_data=TextInput(chunk_text),
             extra_tools=self._extra_tools,
             model=self.model_spec,
@@ -307,9 +310,9 @@ class QuickAgent:
             record_http_traffic=self._record_http_traffic,
             enable_llm_request_logging=self._recorder._enable_llm_request_logging,
             llm_log_path=self._recorder._llm_log_path,
-            extra_headers=self.extra_headers,
-            extra_body=self.extra_body,
-            client=self.client,
+            extra_headers=self._executor.context.extra_headers,
+            extra_body=self._executor.context.extra_body,
+            client=self._executor.config.client,
         )
         if chunk_agent.has_tools():
             if chunk_agent.toolset is None:
@@ -368,108 +371,16 @@ class QuickAgent:
             record_http_traffic=self._record_http_traffic,
             enable_llm_request_logging=self._recorder._enable_llm_request_logging,
             llm_log_path=self._recorder._llm_log_path,
-            client=self.client,
+            client=self._executor.config.client,
         )
         return await agent.run()
 
-    def _init_state(self) -> ChainState:
+    def _init_state(self, *, agent_id: str) -> ChainState:
         return {
-            "agent_id": self._agent_id,
+            "agent_id": agent_id,
             "steps": {},
             "last_step_output": None,
         }
-
-    def _build_model_settings(self, model_spec: ModelSpec) -> ModelSettings | None:
-        settings: ModelSettings = {}
-        if self.extra_headers:
-            settings["extra_headers"] = self.extra_headers
-
-        if model_spec.provider == "openai-compatible":
-            # Ollama OpenAI-compatible API uses "format": "json" to force JSON output.
-            if model_spec.base_url != "https://api.openai.com/v1":
-                extra_body: dict = {"format": "json"}
-                if self.extra_body:
-                    extra_body.update(self.extra_body)
-                if extra_body:
-                    settings["extra_body"] = extra_body
-            elif self.extra_body:
-                extra_body = dict(self.extra_body)
-                options = extra_body.get("options")
-                if isinstance(options, dict) and "num_ctx" in options:
-                    options = {k: v for k, v in options.items() if k != "num_ctx"}
-                    if options:
-                        extra_body["options"] = options
-                    else:
-                        extra_body.pop("options", None)
-                if extra_body:
-                    settings["extra_body"] = extra_body
-
-        if not settings:
-            return None
-
-        return settings
-
-    def _build_http_client(self) -> httpx.AsyncClient | None:
-        timeout_seconds = self.model_spec.timeout_seconds or 60.0
-        keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
-        limits: httpx.Limits = DEFAULT_LIMITS
-        if keepalive_expiry_seconds is not None:
-            limits = httpx.Limits(
-                max_connections=100, keepalive_expiry=keepalive_expiry_seconds
-            )
-
-        headers = self.extra_headers if self.extra_headers else None
-        event_hooks: dict[str, list[Callable[..., Any]]] | None = None
-        if self._record_http_traffic:
-            event_hooks = {
-                "request": [self._recorder._record_http_request],
-                "response": [self._recorder._record_http_response],
-            }
-
-        if (
-            timeout_seconds is None
-            and limits is None
-            and event_hooks is None
-            and headers is None
-        ):
-            return None
-
-        return httpx.AsyncClient(
-            timeout=timeout_seconds,
-            limits=limits,
-            headers=headers,
-            event_hooks=event_hooks,
-        )
-
-    def _build_structured_model_settings(
-        self, *, schema_cls: Type[BaseModel]
-    ) -> ModelSettings | None:
-        model_settings: ModelSettings | None = self.model_settings_json
-        provider = getattr(self.model, "provider", None)
-        base_url = getattr(provider, "base_url", None)
-        if base_url == "https://api.openai.com/v1":
-            if self.model_settings_json is None:
-                model_settings_dict: ModelSettings = {}
-            else:
-                model_settings_dict = self.model_settings_json
-            extra_body_obj = model_settings_dict.get("extra_body")
-            extra_body: dict = {}
-            if isinstance(extra_body_obj, dict):
-                extra_body = dict(extra_body_obj)
-            if "response_format" not in extra_body:
-                schema = schema_cls.model_json_schema()
-                schema["additionalProperties"] = False
-                extra_body["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_cls.__name__,
-                        "schema": schema,
-                        "strict": True,
-                    },
-                }
-            model_settings_dict["extra_body"] = extra_body
-            model_settings = model_settings_dict
-        return model_settings
 
     async def _run_step(
         self,
@@ -553,7 +464,7 @@ class QuickAgent:
                     "strict": True,
                 },
             }
-        request_id = f"{self._agent_id}-{uuid4()}"
+        request_id = f"{self._executor.config.agent_id}-{uuid4()}"
         state_obj = json_compatible_value(self.state)
         if not isinstance(state_obj, dict):
             raise ValueError("Expected chain state to be a JSON-compatible object.")
@@ -562,18 +473,18 @@ class QuickAgent:
             state[str(key)] = value
         return BatchSubmitRequest(
             request_id=request_id,
-            agent_id=self._agent_id,
+            agent_id=self._executor.config.agent_id,
             step_id=step_id,
             step_kind=step_kind,
             output_schema=output_schema,
             model=BatchModelConfig(
                 provider=self.model_spec.provider,
-                base_url=self._effective_base_url(),
+                base_url=self._executor.context.effective_base_url,
                 model_name=self.model_spec.model_name,
                 temperature=self.model_spec.temperature,
                 max_completion_tokens=self.model_spec.max_completion_tokens,
-                extra_headers=self.extra_headers or None,
-                extra_body=self.extra_body or None,
+                extra_headers=self._executor.context.extra_headers or None,
+                extra_body=self._executor.context.extra_body or None,
             ),
             messages=self._build_batch_messages(
                 instructions=instructions,
@@ -600,14 +511,14 @@ class QuickAgent:
             step = self.loaded.spec.chain[step_index]
             step_prompt = self.loaded.step_prompts[step.prompt_section]
             step_instructions = self._build_step_instructions(step_prompt)
-            model_settings = self.model_settings_json
+            model_settings = self._executor.context.model_settings_json
             if step.kind == "structured":
                 if not step.output_schema:
                     raise ValueError(
                         f"Step {step.id} is structured but missing output_schema."
                     )
                 schema_cls = resolve_schema(self.loaded, step.output_schema)
-                model_settings = self._build_structured_model_settings(
+                model_settings = self._executor.context.build_structured_model_settings(
                     schema_cls=schema_cls
                 )
             return self.create_batch_request_for_current_step(
@@ -621,10 +532,10 @@ class QuickAgent:
             )
 
         single_schema = self.loaded.spec.output.output_schema
-        model_settings = self.model_settings_json
+        model_settings = self._executor.context.model_settings_json
         if single_schema is not None:
             schema_cls = resolve_schema(self.loaded, single_schema)
-            model_settings = self._build_structured_model_settings(
+            model_settings = self._executor.context.build_structured_model_settings(
                 schema_cls=schema_cls
             )
         return self.create_batch_request_for_current_step(
@@ -650,7 +561,7 @@ class QuickAgent:
                 raise ValueError(
                     "Error batch payload is missing string field 'message'."
                 )
-            mapped_error = self._map_model_error_message(message_obj)
+            mapped_error = self._executor._map_model_error_message(message_obj)
             if mapped_error is not None:
                 raise mapped_error
             raise ValueError(message_obj)
@@ -718,8 +629,8 @@ class QuickAgent:
             pending = outcome.pending_submit_request
             if pending is None:
                 raise ValueError("tool_use outcome is missing pending_submit_request.")
-            executed = await self._execute_tool_calls(outcome.tool_calls)
-            next_request = self._build_next_request_with_tool_results(
+            executed = await self._executor._execute_tool_calls(outcome.tool_calls)
+            next_request = self._executor._build_next_request_with_tool_results(
                 tool_calls=outcome.tool_calls,
                 executed=executed,
                 submit_request=pending,
@@ -747,154 +658,6 @@ class QuickAgent:
         return BatchImportOutcome(
             result=finalized,
             next_request=result_outcome.next_request,
-        )
-
-    async def _execute_tool_calls(
-        self, tool_calls: list[dict[str, object]]
-    ) -> list[ToolCallResult]:
-        prefix = "QuickAgent._execute_tool_calls"
-        results: list[ToolCallResult] = []
-        toolset = self.toolset
-        for tc in tool_calls:
-            tc_id = tc.get("id")
-            tc_name = tc.get("name")
-            tc_args = tc.get("arguments")
-            if not isinstance(tc_id, str) or not isinstance(tc_name, str):
-                raise ValueError(f"Invalid tool call structure: {tc}")
-            if toolset is None:
-                results.append(
-                    ToolCallResult(
-                        id=tc_id, name=tc_name, error="Toolset not available."
-                    )
-                )
-                continue
-            tool = toolset.tools.get(tc_name)
-            if tool is None:
-                logger.warning(
-                    f"{prefix}: tool_id={tc_id} name={tc_name} > Tool not found"
-                )
-                results.append(
-                    ToolCallResult(
-                        id=tc_id, name=tc_name, error=f"Tool '{tc_name}' not found."
-                    )
-                )
-                continue
-            args: dict[str, object] = {}
-            if isinstance(tc_args, dict):
-                args = tc_args
-            elif isinstance(tc_args, str):
-                try:
-                    parsed = json.loads(tc_args)
-                    if isinstance(parsed, dict):
-                        args = parsed
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            try:
-                if tool.takes_ctx:
-                    results.append(
-                        ToolCallResult(
-                            id=tc_id,
-                            name=tc_name,
-                            error=f"Context-aware tool '{tc_name}' is not supported in batch mode.",
-                        )
-                    )
-                    continue
-                plain_func: Callable[..., Any] = tool.function
-                if inspect.iscoroutinefunction(tool.function):
-                    output = await plain_func(**args)
-                else:
-                    output = plain_func(**args)
-                if isinstance(output, dict):
-                    text_val = output.get("text")
-                    content = (
-                        str(text_val) if text_val is not None else json.dumps(output)
-                    )
-                else:
-                    content = str(output)
-                logger.info(
-                    f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content)}"
-                )
-                results.append(ToolCallResult(id=tc_id, name=tc_name, content=content))
-            except Exception as exc:
-                logger.error(f"{prefix}: tool_id={tc_id} name={tc_name} > error={exc}")
-                results.append(ToolCallResult(id=tc_id, name=tc_name, error=str(exc)))
-        return results
-
-    def _build_next_request_with_tool_results(
-        self,
-        *,
-        tool_calls: list[dict[str, object]],
-        executed: list[ToolCallResult],
-        submit_request: BatchSubmitRequest,
-    ) -> BatchSubmitRequest:
-        messages: list[BatchMessage] = list(submit_request.messages)
-        oa_tool_calls: list[dict[str, JsonValue]] = []
-
-        for tc in tool_calls:
-            tc_id_obj = tc.get("id")
-            tc_name_obj = tc.get("name")
-            tc_args = tc.get("arguments")
-            tc_id_str: str | None = tc_id_obj if isinstance(tc_id_obj, str) else None
-            tc_name_str: str | None = (
-                tc_name_obj if isinstance(tc_name_obj, str) else None
-            )
-            args_str: str
-            if isinstance(tc_args, dict):
-                args_str = json.dumps(tc_args)
-            elif isinstance(tc_args, str):
-                args_str = tc_args
-            else:
-                args_str = "{}"
-            oa_tool_calls.append(
-                {
-                    "id": tc_id_str,
-                    "type": "function",
-                    "function": {
-                        "name": tc_name_str,
-                        "arguments": args_str,
-                    },
-                }
-            )
-        messages.append(BatchMessage(role="assistant", tool_calls=oa_tool_calls))
-
-        for tc, result in zip(tool_calls, executed):
-            tc_name_obj = tc.get("name")
-            tc_name: str | None = tc_name_obj if isinstance(tc_name_obj, str) else None
-            content = result.error if result.content is None else result.content
-            messages.append(
-                BatchMessage(
-                    role="tool",
-                    content=content or "",
-                    name=tc_name or "unknown",
-                    tool_call_id=result.id,
-                )
-            )
-
-        state_obj = json_compatible_value(self.state)
-        if not isinstance(state_obj, dict):
-            raise ValueError("Expected chain state to be a JSON-compatible object.")
-        state: dict[str, object] = {}
-        for key, value in state_obj.items():
-            state[str(key)] = value
-        return BatchSubmitRequest(
-            request_id=f"{self._agent_id}-{uuid4()}",
-            agent_id=self._agent_id,
-            step_id=submit_request.step_id,
-            step_kind=submit_request.step_kind,
-            output_schema=submit_request.output_schema,
-            model=submit_request.model,
-            messages=messages,
-            response_format=submit_request.response_format,
-            tool_ids=list(self.tool_ids),
-            tools=submit_request.tools,
-            tool_use_enabled=submit_request.tool_use_enabled,
-            bedrock_model_id=submit_request.bedrock_model_id,
-            context=BatchAgentContext(
-                input_text=self.run_input.text,
-                state=state,
-                safe_dir=self.loaded.spec.safe_dir,
-                extra_tools=list(self._extra_tools or []),
-            ),
         )
 
     def _import_single_shot_result(self, raw_result: AgentResult) -> BatchImportOutcome:
@@ -938,15 +701,17 @@ class QuickAgent:
             next_step = chain[next_index]
             next_prompt = self.loaded.step_prompts[next_step.prompt_section]
             next_instructions = self._build_step_instructions(next_prompt)
-            next_model_settings = self.model_settings_json
+            next_model_settings = self._executor.context.model_settings_json
             if next_step.kind == "structured":
                 if not next_step.output_schema:
                     raise ValueError(
                         f"Step {next_step.id} is structured but missing output_schema."
                     )
                 next_schema_cls = resolve_schema(self.loaded, next_step.output_schema)
-                next_model_settings = self._build_structured_model_settings(
-                    schema_cls=next_schema_cls
+                next_model_settings = (
+                    self._executor.context.build_structured_model_settings(
+                        schema_cls=next_schema_cls
+                    )
                 )
             next_request = self.create_batch_request_for_current_step(
                 step_id=next_step.id,
@@ -997,7 +762,7 @@ class QuickAgent:
                     f"Structured step {step_id} expected BaseModel, JSON string, or object output."
                 )
             schema_cls = resolve_schema(self.loaded, output_schema)
-            return self._parse_structured_result(raw_result, schema_cls)
+            return parse_structured_result(raw_result, schema_cls)
         raise ValueError(f"Unsupported import step kind: {step_kind}")
 
     def _apply_strict_schema(self, schema: dict[str, JsonValue]) -> None:
@@ -1023,7 +788,7 @@ class QuickAgent:
                 payload = output.model_dump(mode="json")
                 return schema_cls.model_validate(payload)
             if isinstance(output, (str, dict)):
-                return self._parse_structured_result(output, schema_cls)
+                return parse_structured_result(output, schema_cls)
             raise ValueError("Structured output requires schema-compatible result.")
         if output_format == "json":
             if isinstance(output, BaseModel):
@@ -1053,249 +818,6 @@ class QuickAgent:
             raise ValueError("Text output must be a string.")
         return output
 
-    def _map_model_error_message(self, message: str) -> QuickAgentException | None:
-        if "does not support tools" in message:
-            return QuickAgentToolsNotSupportedException(
-                model_name=self.model_spec.model_name,
-                message=message,
-            )
-        if "does not support chat" in message:
-            return QuickAgentChatNotSupportedException(
-                model_name=self.model_spec.model_name,
-                message=message,
-            )
-        return None
-
-    async def _call_batch_handler(
-        self, batch_request: BatchSubmitRequest
-    ) -> BatchImportRequest:
-        handler_obj = self._memory.get("batch_call")
-        if handler_obj is None:
-            return await self._local_batch_call(batch_request)
-        if not callable(handler_obj):
-            raise ValueError("memory['batch_call'] must be callable when provided.")
-        response = handler_obj(batch_request)
-        if isinstance(response, BatchImportRequest):
-            return response
-        if inspect.isawaitable(response):
-            awaited = await response
-            if isinstance(awaited, BatchImportRequest):
-                return awaited
-            return BatchImportRequest.model_validate(awaited)
-        return BatchImportRequest.model_validate(response)
-
-    async def _local_batch_call(
-        self, batch_request: BatchSubmitRequest
-    ) -> BatchImportRequest:
-        prefix = "QuickAgent._local_batch_call"
-        api_key_env = self.model_spec.api_key_env
-        api_key = os.environ.get(api_key_env, "noop")
-        logger.debug(f"{prefix}: api_key_env={api_key_env}")
-        timeout_seconds = self.model_spec.timeout_seconds
-        client = (
-            self.client
-            or self.model.client
-            or openai.AsyncOpenAI(
-                api_key=api_key,
-                base_url=self.model_spec.base_url,
-                timeout=timeout_seconds,
-                http_client=self._http_client,
-            )
-        )
-        messages: list[ChatCompletionMessageParam] = []
-        for batch_message in batch_request.messages:
-            if batch_message.role == "system":
-                system_message: ChatCompletionSystemMessageParam = {
-                    "role": "system",
-                    "content": batch_message.content or "",
-                }
-                messages.append(system_message)
-            elif batch_message.role == "assistant":
-                assistant_message: ChatCompletionAssistantMessageParam = {
-                    "role": "assistant",
-                }
-                if batch_message.content is not None:
-                    assistant_message["content"] = batch_message.content
-                if batch_message.tool_calls is not None:
-                    assistant_message["tool_calls"] = batch_message.tool_calls  # type: ignore[typeddict-item]
-                messages.append(assistant_message)
-            elif batch_message.role == "tool":
-                tool_message: ChatCompletionToolMessageParam = {
-                    "role": "tool",
-                    "content": batch_message.content or "",
-                    "tool_call_id": batch_message.tool_call_id or "",
-                }
-                messages.append(tool_message)
-            else:
-                user_message: ChatCompletionUserMessageParam = {
-                    "role": "user",
-                    "content": batch_message.content or "",
-                }
-                messages.append(user_message)
-        extra_body: dict[str, JsonValue] | None = None
-        if self.model_settings_json is not None:
-            extra_body_obj = self.model_settings_json.get("extra_body")
-            if isinstance(extra_body_obj, dict):
-                extra_body = extra_body_obj
-        if batch_request.response_format is not None:
-            if extra_body is None:
-                extra_body = {}
-            extra_body["response_format"] = batch_request.response_format
-        tools_payload: list[ChatCompletionToolUnionParam] = []
-        if self.toolset is not None and self.tool_ids:
-            for tool in self.toolset.tools.values():
-                function_def = FunctionDefinition(
-                    name=tool.name,
-                    description=tool.description or "",
-                    parameters=tool.function_schema.json_schema,
-                )
-                tools_payload.append(
-                    ChatCompletionFunctionToolParam(
-                        {"type": "function", "function": function_def}
-                    )
-                )
-        try:
-            response = await client.chat.completions.create(
-                model=batch_request.model.model_name,
-                messages=messages,
-                temperature=batch_request.model.temperature,
-                max_completion_tokens=batch_request.model.max_completion_tokens,
-                extra_body=extra_body,
-                tools=tools_payload or openai.omit,
-            )
-        except openai.APIStatusError as error:
-            body_obj = error.body
-            error_message = str(error)
-            if isinstance(body_obj, dict):
-                body_message = body_obj.get("message")
-                if isinstance(body_message, str):
-                    error_message = body_message
-            elif isinstance(body_obj, str):
-                error_message = body_obj
-            mapped_error = self._map_model_error_message(error_message)
-            if mapped_error is not None:
-                raise mapped_error from error
-            raise
-        self._capture_openai_sdk_metrics(response)
-        if not response.choices:
-            raise ValueError("Model returned no completion choices.")
-        message_obj = response.choices[0].message
-        content_obj = message_obj.content
-        tool_calls = getattr(message_obj, "tool_calls", None)
-
-        if not content_obj and not tool_calls:
-            refusal_obj = getattr(message_obj, "refusal", None)
-            if refusal_obj:
-                raise ValueError(f"Model refused response: {refusal_obj}")
-            raise ValueError("Model returned an empty response.")
-
-        if tool_calls:
-            return BatchImportRequest(
-                request_id=batch_request.request_id,
-                provider_job_id=getattr(response, "id", None),
-                payload={
-                    "state": "tool_use",
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        }
-                        for tool_call in tool_calls
-                    ],
-                    "submit_request": batch_request.model_dump(mode="json"),
-                },
-            )
-        return BatchImportRequest(
-            request_id=batch_request.request_id,
-            provider_job_id=getattr(response, "id", None),
-            payload={
-                "state": "completed",
-                "output": content_obj,
-            },
-        )
-
-    def _parse_structured_result(
-        self, raw_output: object, schema_cls: Type[BaseModel]
-    ) -> BaseModel:
-        if isinstance(raw_output, BaseModel):
-            if isinstance(raw_output, schema_cls):
-                return raw_output
-            payload = raw_output.model_dump(mode="json")
-            return schema_cls.model_validate(payload)
-        if isinstance(raw_output, str):
-            try:
-                return schema_cls.model_validate_json(raw_output)
-            except (json.JSONDecodeError, ValueError):
-                cleaned_raw = extract_first_json_object(raw_output)
-                return schema_cls.model_validate_json(cleaned_raw)
-        return schema_cls.model_validate(raw_output)
-
-    async def _execute_batch_request(
-        self, *, batch_request: BatchSubmitRequest, schema_cls: Type[BaseModel] | None
-    ) -> BaseModel | str:
-        request = batch_request
-        while True:
-            batch_import = await self._call_batch_handler(request)
-            outcome = self._import_outcome(batch_import=batch_import)
-            if outcome.tool_calls is not None:
-                pending = outcome.pending_submit_request
-                if pending is None:
-                    raise ValueError(
-                        "tool_use outcome is missing pending_submit_request."
-                    )
-                executed = await self._execute_tool_calls(outcome.tool_calls)
-                request = self._build_next_request_with_tool_results(
-                    tool_calls=outcome.tool_calls,
-                    executed=executed,
-                    submit_request=pending,
-                )
-                continue
-            if outcome.next_request is not None:
-                request = outcome.next_request
-                continue
-            raw_result = outcome.result
-            if raw_result is None:
-                raise ValueError("Batch import outcome did not include a final result.")
-            if schema_cls is None:
-                if isinstance(raw_result, str):
-                    return raw_result
-                raise ValueError("Text step expected a string output.")
-            return self._parse_structured_result(raw_result, schema_cls)
-
-    def _normalize_usage_metrics(self, usage: object) -> dict[str, object]:
-        usage_dict: dict[str, object] = {}
-        if isinstance(usage, dict):
-            for key, value in usage.items():
-                usage_dict[str(key)] = json_compatible_value(value)
-            return usage_dict
-        if isinstance(usage, BaseModel):
-            payload = usage.model_dump(exclude_none=True)
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    usage_dict[str(key)] = json_compatible_value(value)
-            return usage_dict
-        model_dump = getattr(usage, "model_dump", None)
-        if callable(model_dump):
-            payload = model_dump(exclude_none=True)
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    usage_dict[str(key)] = json_compatible_value(value)
-                return usage_dict
-        return usage_dict
-
-    def _extract_finish_reason(self, response: object | None) -> str | None:
-        if response is None:
-            return None
-        choices = getattr(response, "choices", None)
-        if not isinstance(choices, list) or not choices:
-            return None
-        first_choice = choices[0]
-        finish_reason = getattr(first_choice, "finish_reason", None)
-        if isinstance(finish_reason, str) and finish_reason:
-            return finish_reason
-        return None
-
     def _capture_metrics(self, *, usage: object, response: object | None) -> None:
         model = self.model_spec.model_name
         if response is not None:
@@ -1305,7 +827,7 @@ class QuickAgent:
         metrics: dict[str, object] = {
             "provider": self.model_spec.provider,
             "model": model,
-            "usage": self._normalize_usage_metrics(usage),
+            "usage": normalize_usage_metrics(usage),
         }
         if response is not None:
             completion_id = getattr(response, "id", None)
@@ -1317,10 +839,10 @@ class QuickAgent:
             system_fingerprint = getattr(response, "system_fingerprint", None)
             if isinstance(system_fingerprint, str) and system_fingerprint:
                 metrics["system_fingerprint"] = system_fingerprint
-            finish_reason = self._extract_finish_reason(response)
+            finish_reason = extract_finish_reason(response)
             if finish_reason is not None:
                 metrics["finish_reason"] = finish_reason
-        self.last_run_metrics = metrics
+        self._executor.last_run_metrics = metrics
 
     def _capture_pydantic_ai_metrics(self, result: object) -> None:
         usage: object = {}
@@ -1334,11 +856,6 @@ class QuickAgent:
         usage = getattr(response, "usage", {})
         self._capture_metrics(usage=usage, response=response)
 
-    def _effective_base_url(self) -> str:
-        if self.client is not None:
-            return str(self.client.base_url).rstrip("/")
-        return self.model_spec.base_url.rstrip("/")
-
     def _unexpected_model_behavior_request_context(
         self,
         *,
@@ -1348,7 +865,7 @@ class QuickAgent:
         model_settings: ModelSettings | None,
     ) -> dict[str, object]:
         context: dict[str, object] = {
-            "base_url": self._effective_base_url(),
+            "base_url": self._executor.context.effective_base_url,
             "model_name": self.model_spec.model_name,
             "instructions": instructions,
             "system_prompt": system_prompt,
@@ -1375,7 +892,7 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=self.model_settings_json,
+            model_settings=self._executor.context.model_settings_json,
         )
         logger.info(
             "%s: model=%s step=%s > Calling model",
@@ -1390,9 +907,9 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=self.model_settings_json,
+            model_settings=self._executor.context.model_settings_json,
         )
-        output = await self._execute_batch_request(
+        output = await self._executor._execute_batch_request(
             batch_request=batch_request,
             schema_cls=None,
         )
@@ -1410,9 +927,9 @@ class QuickAgent:
         user_prompt = self._build_single_shot_prompt()
         instructions = self.loaded.instructions
         system_prompt = self.loaded.system_prompt
-        model_settings = self.model_settings_json
+        model_settings = self._executor.context.model_settings_json
         if schema_cls is not None:
-            model_settings = self._build_structured_model_settings(
+            model_settings = self._executor.context.build_structured_model_settings(
                 schema_cls=schema_cls
             )
         self._recorder._record_llm_request(
@@ -1434,7 +951,7 @@ class QuickAgent:
             user_prompt=user_prompt,
             model_settings=model_settings,
         )
-        return await self._execute_batch_request(
+        return await self._executor._execute_batch_request(
             batch_request=batch_request,
             schema_cls=schema_cls,
         )
@@ -1449,7 +966,9 @@ class QuickAgent:
             raise ValueError(f"Step {step.id} is structured but missing output_schema.")
         schema_cls = resolve_schema(self.loaded, step.output_schema)
 
-        model_settings = self._build_structured_model_settings(schema_cls=schema_cls)
+        model_settings = self._executor.context.build_structured_model_settings(
+            schema_cls=schema_cls
+        )
 
         user_prompt = make_user_prompt(self.run_input, self.state)
         step_prompt = self.loaded.step_prompts[step.prompt_section]
@@ -1480,7 +999,7 @@ class QuickAgent:
             user_prompt=user_prompt,
             model_settings=model_settings,
         )
-        output = await self._execute_batch_request(
+        output = await self._executor._execute_batch_request(
             batch_request=batch_request,
             schema_cls=schema_cls,
         )
@@ -1578,35 +1097,19 @@ class QuickAgent:
     def _toolsets_for_run(self) -> list[FunctionToolset[Any]]:
         if not self.has_tools():
             return []
-        toolset = self.toolset
-        if toolset is None:
+        if self.toolset is None:
             return []
-        return [toolset]
+        return [self.toolset]
 
     def _tool_deps(self) -> ToolRunDeps:
-        return {"state": self.state, "memory": self._memory}
-
-    @property
-    def memory(self) -> dict[str, Any]:
-        return self._memory
-
-    @memory.setter
-    def memory(self, memory: dict[str, Any]) -> None:
-        self._memory = memory
+        return {"state": self.state, "memory": self._executor.config.memory}
 
     async def _handle_handoff(
         self, last_step_output: AgentResult
     ) -> AgentResult | None:
         if self.loaded.spec.handoff.enabled and self.loaded.spec.handoff.agent_id:
-            if isinstance(last_step_output, BaseModel):
-                payload = last_step_output.model_dump_json(indent=2)
-            elif isinstance(last_step_output, (dict, list)):
-                payload = json.dumps(last_step_output, indent=2)
-            else:
-                payload = str(last_step_output)
+            payload = agent_results_to_str(last_step_output)
             return await self._run_nested_agent(
                 self.loaded.spec.handoff.agent_id, TextInput(payload)
             )
         return None
-
-

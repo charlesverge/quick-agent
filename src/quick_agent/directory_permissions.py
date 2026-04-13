@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -30,8 +31,8 @@ class DirectoryPermissions:
         target = path
         if not target.is_absolute():
             target = self._root / target
-        resolved = target.expanduser().resolve(strict=False)
-        root_resolved = self._root.expanduser().resolve(strict=False)
+        resolved = Path(os.path.realpath(str(target.expanduser())))
+        root_resolved = Path(os.path.realpath(str(self._root.expanduser())))
         if not resolved.is_relative_to(root_resolved):
             raise PermissionError(f"Path {resolved} is outside safe directory {root_resolved}.")
         if for_write:

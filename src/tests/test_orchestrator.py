@@ -3,7 +3,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 import httpx
 import pytest
@@ -14,18 +14,23 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import FunctionToolset
 
+from quick_agent import agent_execution_context as agent_execution_context_module
+from quick_agent import agent_model_utils as agent_model_utils_module
 from quick_agent import agent_tools as tools_module
 from quick_agent import input_adaptors as input_adaptors_module
 from quick_agent import quick_agent as qa_module
 from quick_agent import single_shot as single_shot_module
 from quick_agent.agent_call_tool import AgentCallTool
+from quick_agent.agent_model_utils import build_model
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
+from quick_agent.agent_utils import parse_structured_result
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
     QuickAgentToolsNotSupportedException,
 )
+from quick_agent.executor import ToolCallResult
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
 from quick_agent.models.batch_request import (
     BatchImportOutcome,
@@ -48,8 +53,6 @@ from quick_agent.output import write_output
 from quick_agent.prompting import make_user_prompt
 from quick_agent.quick_agent import (
     QuickAgent,
-    ToolCallResult,
-    build_model,
     resolve_schema,
 )
 from quick_agent.recorder import ExecutionLogEntry
@@ -293,6 +296,7 @@ def _make_quick_agent_for_test(
     run_input: RunInput | None = None,
     model: OpenAIChatModel | None = None,
     toolset: FunctionToolset[Any] | None = None,
+    batch_call: Callable[..., object] | None = None,
     memory: dict[str, Any] | None = None,
     enable_llm_request_logging: bool = False,
     llm_log_path: Path | str | None = None,
@@ -319,6 +323,7 @@ def _make_quick_agent_for_test(
         enable_llm_request_logging=enable_llm_request_logging,
         llm_log_path=llm_log_path,
     )
+    agent._executor.config.batch_call = batch_call
     agent.run_input = run_input
     agent.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
     if model is not None:
@@ -340,8 +345,8 @@ def test_init_sets_registry_and_tool_roots(tmp_path: Path) -> None:
 
 def test_build_model_uses_env_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_KEY", "abc")
-    monkeypatch.setattr(qa_module, "OpenAIProvider", DummyProvider)
-    monkeypatch.setattr(qa_module, "OpenAIChatModel", DummyModel)
+    monkeypatch.setattr(agent_model_utils_module, "OpenAIProvider", DummyProvider)
+    monkeypatch.setattr(agent_model_utils_module, "OpenAIChatModel", DummyModel)
 
     spec = ModelSpec(
         base_url="http://base", model_name="gpt-test", api_key_env="TEST_KEY"
@@ -482,8 +487,8 @@ async def test_agent_call_tool_rejects_missing_or_duplicate_input() -> None:
 def test_init_state_contains_agent_id_and_steps() -> None:
     qa = _make_quick_agent_for_test()
 
-    qa._agent_id = "agent-1"
-    state = qa._init_state()
+    qa._executor.config.agent_id = "agent-1"
+    state = qa._init_state(agent_id="agent-1")
 
     assert state == {"agent_id": "agent-1", "steps": {}, "last_step_output": None}
 
@@ -492,7 +497,9 @@ def test_build_model_settings_openai_compatible() -> None:
     qa = _make_quick_agent_for_test()
     spec = ModelSpec(base_url="http://x", model_name="m", provider="openai-compatible")
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings == {"extra_body": {"format": "json"}}
 
@@ -505,7 +512,9 @@ def test_build_model_settings_openai_endpoint_skips_format() -> None:
         provider="openai-compatible",
     )
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings is None
 
@@ -514,7 +523,9 @@ def test_build_model_settings_other_provider() -> None:
     qa = _make_quick_agent_for_test()
     spec = ModelSpec(base_url="http://x", model_name="m", provider="other")
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings is None
 
@@ -527,7 +538,9 @@ def test_build_model_settings_includes_extra_body() -> None:
         provider="openai-compatible",
     )
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings is None
 
@@ -537,9 +550,11 @@ def test_build_model_settings_includes_extra_body() -> None:
         model_name="m",
         provider="openai-compatible",
     )
-    qa.extra_body = {"foo": "bar"}
+    qa._executor.config.extra_body = {"foo": "bar"}
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings == {"extra_body": {"foo": "bar"}}
 
@@ -551,9 +566,11 @@ def test_build_model_settings_openai_endpoint_strips_num_ctx() -> None:
         model_name="m",
         provider="openai-compatible",
     )
-    qa.extra_body = {"options": {"num_ctx": 8192, "other": 1}}
+    qa._executor.config.extra_body = {"options": {"num_ctx": 8192, "other": 1}}
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings == {"extra_body": {"options": {"other": 1}}}
 
@@ -565,9 +582,11 @@ def test_build_model_settings_openai_endpoint_strips_num_ctx_all_removed() -> No
         model_name="m",
         provider="openai-compatible",
     )
-    qa.extra_body = {"options": {"num_ctx": 8192}}
+    qa._executor.config.extra_body = {"options": {"num_ctx": 8192}}
 
-    settings = qa._build_model_settings(spec)
+    settings = type(qa._executor.context).build_model_settings(
+        qa._executor.config, spec
+    )
 
     assert settings is None
 
@@ -576,10 +595,14 @@ def test_build_structured_model_settings_non_openai_passthrough() -> None:
     qa = _make_quick_agent_for_test()
     schema = ExampleSchema
     settings: ModelSettings = {"extra_body": {"format": "json"}}
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://localhost"))
-    qa.model_settings_json = settings
+    qa._executor.config.model_spec = ModelSpec(
+        base_url="http://localhost",
+        model_name="m",
+        provider="openai-compatible",
+    )
+    qa._executor.context.model_settings_json = settings
 
-    result = qa._build_structured_model_settings(schema_cls=schema)
+    result = qa._executor.context.build_structured_model_settings(schema_cls=schema)
 
     assert result == settings
 
@@ -587,9 +610,13 @@ def test_build_structured_model_settings_non_openai_passthrough() -> None:
 def test_build_structured_model_settings_openai_injects_schema() -> None:
     qa = _make_quick_agent_for_test()
     schema = ExampleSchema
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
+    qa._executor.config.model_spec = ModelSpec(
+        base_url="https://api.openai.com/v1",
+        model_name="m",
+        provider="openai-compatible",
+    )
 
-    result = qa._build_structured_model_settings(schema_cls=schema)
+    result = qa._executor.context.build_structured_model_settings(schema_cls=schema)
 
     assert result is not None
     extra_body_obj = result.get("extra_body")
@@ -602,6 +629,42 @@ def test_build_structured_model_settings_openai_injects_schema() -> None:
     assert isinstance(json_schema_obj, dict)
     assert json_schema_obj["name"] == "ExampleSchema"
     assert json_schema_obj["strict"] is True
+
+
+def test_build_structured_model_settings_openai_injects_required_optional_fields() -> (
+    None
+):
+    class OptionalSchema(BaseModel):
+        required_field: int
+        optional_field: str | None = None
+
+    class NestedSchema(BaseModel):
+        nested: OptionalSchema
+        summary: str
+
+    qa = _make_quick_agent_for_test()
+    qa._executor.config.model_spec = ModelSpec(
+        base_url="https://api.openai.com/v1",
+        model_name="m",
+        provider="openai-compatible",
+    )
+
+    result = qa._executor.context.build_structured_model_settings(
+        schema_cls=NestedSchema
+    )
+
+    assert result is not None
+    extra_body_obj = result.get("extra_body")
+    assert isinstance(extra_body_obj, dict)
+    response_format_obj = extra_body_obj["response_format"]
+    assert isinstance(response_format_obj, dict)
+    schema_obj = response_format_obj["json_schema"]["schema"]
+    assert isinstance(schema_obj, dict)
+    nested_defs = schema_obj.get("$defs")
+    assert isinstance(nested_defs, dict)
+    nested_schema = nested_defs.get("OptionalSchema")
+    assert isinstance(nested_schema, dict)
+    assert nested_schema["required"] == ["required_field", "optional_field"]
 
 
 def test_build_user_prompt_uses_prompting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -664,7 +727,7 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
         return "hello"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -708,7 +771,7 @@ async def test_run_text_step_omits_tools_when_disabled(
         return "hello"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -750,7 +813,7 @@ async def test_run_step_structured_parses_json_with_fallback(
         return ExampleSchema(x=7)
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -781,7 +844,7 @@ async def test_run_step_structured_parses_json_with_fallback(
         qa.loaded = loaded
         qa.model = cast(OpenAIChatModel, object())
         qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
-        qa.model_settings_json = {"extra_body": {"format": "json"}}
+        qa._executor.context.model_settings_json = {"extra_body": {"format": "json"}}
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
         qa.run_input = run_input
@@ -833,7 +896,7 @@ async def test_run_text_step_uses_make_user_prompt(
         return "ok"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -881,7 +944,7 @@ async def test_run_text_step_no_instructions_or_system_prompt(
         return "ok"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -916,7 +979,9 @@ async def test_run_text_step_no_instructions_or_system_prompt(
 
     assert output == "ok"
     assert captured["batch_request"].messages[0].content == "do thing"
-    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[1].content == make_user_prompt(
+        run_input, qa.state
+    )
 
 
 @pytest.mark.anyio
@@ -935,7 +1000,7 @@ async def test_run_text_step_system_prompt_only(
         return "ok"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -970,7 +1035,9 @@ async def test_run_text_step_system_prompt_only(
 
     assert output == "ok"
     assert captured["batch_request"].messages[0].content == "You are concise.\ndo thing"
-    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[1].content == make_user_prompt(
+        run_input, qa.state
+    )
 
 
 @pytest.mark.anyio
@@ -987,7 +1054,7 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
         return "ok"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1022,7 +1089,9 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
 
     assert output == "ok"
     assert captured["batch_request"].messages[0].content == "Use the tool.do thing"
-    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[1].content == make_user_prompt(
+        run_input, qa.state
+    )
 
 
 @pytest.mark.anyio
@@ -1041,7 +1110,7 @@ async def test_run_text_step_logs_llm_request_payload_immediately(
         return "ok"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1064,7 +1133,7 @@ async def test_run_text_step_logs_llm_request_payload_immediately(
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa._recorder._agent_id = qa._agent_id
     qa._recorder.model_spec = qa.model_spec
-    qa._recorder.effective_base_url = qa._effective_base_url()
+    qa._recorder.effective_base_url = qa._executor.context.effective_base_url
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
     qa._recorder.tool_ids = list(qa.tool_ids)
@@ -1124,7 +1193,7 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
         return ExampleSchema(x=3)
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1186,7 +1255,7 @@ async def test_run_structured_step_adds_json_schema_for_openai(
         return ExampleSchema(x=9)
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1627,7 +1696,7 @@ async def test_run_chain_single_shot_system_prompt_only(
         return "hello"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1659,7 +1728,9 @@ async def test_run_chain_single_shot_system_prompt_only(
 
     assert output == "hello"
     assert captured["batch_request"].messages[0].content == "You are concise."
-    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[1].content == make_user_prompt(
+        run_input, qa.state
+    )
 
 
 @pytest.mark.anyio
@@ -1678,7 +1749,7 @@ async def test_run_chain_single_shot_instructions_only(
         return "hello"
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -1710,7 +1781,9 @@ async def test_run_chain_single_shot_instructions_only(
 
     assert output == "hello"
     assert captured["batch_request"].messages[0].content == "Use the tool."
-    assert captured["batch_request"].messages[1].content == make_user_prompt(run_input, qa.state)
+    assert captured["batch_request"].messages[1].content == make_user_prompt(
+        run_input, qa.state
+    )
 
 
 @pytest.mark.anyio
@@ -1727,7 +1800,7 @@ async def test_run_text_step_maps_tools_not_supported_to_quick_agent_exception(
                         method="POST",
                         url="http://x/chat/completions",
                         headers={"Content-Type": "application/json"},
-                        content=b'{}',
+                        content=b"{}",
                     ),
                     headers={"x-response-id": "resp-1"},
                     content=b'{"message":"registry.ollama.ai/library/deepseek-r1:14b does not support tools"}',
@@ -1779,10 +1852,10 @@ async def test_run_single_shot_maps_chat_not_supported_to_quick_agent_exception(
                         method="POST",
                         url="http://x/chat/completions",
                         headers={"Content-Type": "application/json"},
-                        content=b'{}',
+                        content=b"{}",
                     ),
                     headers={"x-response-id": "resp-1"},
-                    content=b'{"message":"\"nomic-embed-text:v1.5\" does not support chat"}',
+                    content=b'{"message":""nomic-embed-text:v1.5" does not support chat"}',
                 ),
                 body={"message": '"nomic-embed-text:v1.5" does not support chat'},
             )
@@ -1901,7 +1974,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "OutputSchema"
     assert response_format["json_schema"]["strict"] is True
-    assert qa.last_run_metrics == {
+    assert qa._executor.last_run_metrics == {
         "provider": "openai-compatible",
         "model": "gpt-4.1-mini",
         "usage": usage_payload,
@@ -2046,7 +2119,7 @@ async def test_run_single_shot_structured_rejects_tools() -> None:
     qa = _make_quick_agent_for_test(
         loaded=loaded,
         run_input=run_input,
-        memory={"batch_call": batch_call},
+        batch_call=batch_call,
     )
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
@@ -2087,7 +2160,7 @@ async def test_run_single_shot_structured_still_uses_batch_call_when_flag_enable
     qa = _make_quick_agent_for_test(
         loaded=loaded,
         run_input=run_input,
-        memory={"batch_call": batch_call},
+        batch_call=batch_call,
     )
     qa.loaded = loaded
     qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
@@ -2134,7 +2207,7 @@ async def test_run_text_step_propagates_unexpected_model_behavior_with_request_c
         raise unexpected_error
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -2217,7 +2290,7 @@ def test_record_llm_request_uses_client_base_url_for_execution_log() -> None:
     qa = _make_quick_agent_for_test()
     qa.model_spec = ModelSpec(base_url="http://localhost:11434", model_name="m")
     qa._recorder.model_spec = qa.model_spec
-    qa._recorder.effective_base_url = qa._effective_base_url()
+    qa._recorder.effective_base_url = qa.model_spec.base_url.rstrip("/")
     qa._recorder._record_llm_request(
         call_site="run_single_shot",
         step_id=None,
@@ -2251,7 +2324,7 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
         raise unexpected_error
 
     monkeypatch.setattr(
-        QuickAgent,
+        qa_module.AgentExecutor,
         "_execute_batch_request",
         fake_execute_batch_request,
     )
@@ -2290,7 +2363,7 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
 @pytest.mark.anyio
 async def test_http_hook_recorders_store_entries_on_quick_agent() -> None:
     qa = _make_quick_agent_for_test()
-    qa.model_settings_json = None
+    qa._executor.context.model_settings_json = None
     request = httpx.Request(
         method="POST",
         url="http://localhost:11434/v1/chat/completions",
@@ -2456,8 +2529,14 @@ async def test_run_agent_wires_dependencies(
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
-    monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
+    monkeypatch.setattr(
+        agent_execution_context_module, "build_model", build_model_recorder
+    )
+    monkeypatch.setattr(
+        agent_execution_context_module.AgentExecutionContext,
+        "build_model_settings",
+        build_settings_recorder,
+    )
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
     monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
@@ -2492,7 +2571,10 @@ async def test_run_agent_wires_dependencies(
     assert build_model_args == (loaded.spec.model,)
     assert "http_client" in build_model_kwargs
 
-    assert build_settings_recorder.calls == [((loaded.spec.model,), {})]
+    assert len(build_settings_recorder.calls) == 1
+    build_settings_args, build_settings_kwargs = build_settings_recorder.calls[0]
+    assert build_settings_kwargs == {}
+    assert build_settings_args[0].model_spec == loaded.spec.model
 
     assert build_toolset_recorder.calls
     args, kwargs = build_toolset_recorder.calls[0]
@@ -2561,8 +2643,9 @@ async def test_run_skips_write_when_output_file_missing(
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
-    monkeypatch.setattr(QuickAgent, "_build_model_settings", build_settings_recorder)
+    monkeypatch.setattr(
+        agent_execution_context_module, "build_model", build_model_recorder
+    )
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
     monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
@@ -2610,7 +2693,9 @@ def test_init_can_disable_http_traffic_recording(
     load_input_recorder = SyncCallRecorder(return_value=run_input)
     build_model_recorder = SyncCallRecorder(return_value=object())
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    monkeypatch.setattr(
+        agent_execution_context_module, "build_model", build_model_recorder
+    )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
         tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset())
@@ -2655,7 +2740,9 @@ def test_init_http_traffic_recording_is_disabled_by_default(
     load_input_recorder = SyncCallRecorder(return_value=run_input)
     build_model_recorder = SyncCallRecorder(return_value=object())
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    monkeypatch.setattr(
+        agent_execution_context_module, "build_model", build_model_recorder
+    )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
         tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset())
@@ -2705,7 +2792,9 @@ async def test_init_applies_model_http_client_settings(
     load_input_recorder = SyncCallRecorder(return_value=run_input)
     build_model_recorder = SyncCallRecorder(return_value=object())
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(qa_module, "build_model", build_model_recorder)
+    monkeypatch.setattr(
+        agent_execution_context_module, "build_model", build_model_recorder
+    )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
         tools, "build_toolset", SyncCallRecorder(return_value=RecordingToolset())
@@ -2830,7 +2919,7 @@ def test_create_batch_request_for_current_step() -> None:
         instructions="do thing",
         system_prompt="system prompt",
         user_prompt="input prompt",
-        model_settings=qa.model_settings_json,
+        model_settings=qa._executor.context.model_settings_json,
     )
     assert request.agent_id == "a"
     assert request.step_id == "s1"
@@ -3028,7 +3117,7 @@ async def test_apply_imported_batch_result_returns_next_request() -> None:
         instructions="do thing",
         system_prompt="system prompt",
         user_prompt="input prompt",
-        model_settings=qa.model_settings_json,
+        model_settings=qa._executor.context.model_settings_json,
     )
     batch_import = BatchImportRequest(
         request_id="r1",
@@ -3110,7 +3199,7 @@ async def test_import_chain_result_accepts_dict_for_structured_step() -> None:
 def test_parse_structured_result_rejects_wrong_basemodel_type() -> None:
     qa = _make_quick_agent_for_test()
     with pytest.raises(ValidationError):
-        qa._parse_structured_result(OtherSchema(msg="x"), ExampleSchema)
+        parse_structured_result(OtherSchema(msg="x"), ExampleSchema)
 
 
 @pytest.mark.anyio
@@ -3121,7 +3210,7 @@ async def test_run_text_step_uses_batch_call_handler() -> None:
             payload={"state": "completed", "output": "from batch"},
         )
 
-    qa = _make_quick_agent_for_test(memory={"batch_call": batch_call})
+    qa = _make_quick_agent_for_test(batch_call=batch_call)
     step = qa.loaded.spec.chain[0]
     output = await qa._run_text_step(step=step)
     assert output == "from batch"
@@ -3151,7 +3240,7 @@ async def test_run_structured_step_parses_batch_output_with_json_fallback() -> N
         system_prompt="",
         step_prompts={"step:one": "do thing"},
     )
-    qa = _make_quick_agent_for_test(loaded=loaded, memory={"batch_call": batch_call})
+    qa = _make_quick_agent_for_test(loaded=loaded, batch_call=batch_call)
     output = await qa._run_structured_step(step=step)
     assert isinstance(output, ExampleSchema)
     assert output.x == 7
@@ -3206,7 +3295,7 @@ def test_build_next_request_with_tool_results_extends_messages() -> None:
     )
     tool_calls = [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}]
     executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
-    next_req = qa._build_next_request_with_tool_results(
+    next_req = qa._executor._build_next_request_with_tool_results(
         tool_calls=tool_calls,
         executed=executed,
         submit_request=submit_request,
