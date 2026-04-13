@@ -35,7 +35,7 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-def _extract_bedrock_output_text(model_output: dict[str, object]) -> str:
+def _extract_bedrock_output_text(record_id: str, model_output: dict[str, object]) -> str:
     content_obj = model_output.get("content")
     if isinstance(content_obj, list):
         text_items: list[str] = []
@@ -62,7 +62,7 @@ def _extract_bedrock_output_text(model_output: dict[str, object]) -> str:
                         return content_value
             index += 1
     raise ValueError(
-        "Bedrock result missing supported output fields (modelOutput.content or modelOutput.choices[].message.content)."
+        f"Bedrock result missing supported output fields for record_id={record_id} (modelOutput.content or modelOutput.choices[].message.content)."
     )
 
 
@@ -376,7 +376,7 @@ def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
             request_id=record_id,
             payload={"state": "tool_use", "tool_calls": tool_calls},
         )
-    output_text = _extract_bedrock_output_text(model_output_obj)
+    output_text = _extract_bedrock_output_text(record_id, model_output_obj)
     return BatchImportRequest(
         request_id=record_id,
         payload={"state": "completed", "output": output_text},

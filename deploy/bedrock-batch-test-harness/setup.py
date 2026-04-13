@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import anyio
-from settings import HarnessSettings, resolve_runtime_settings, write_runtime_settings
+from settings import (
+  HarnessSettings,
+  resolve_runtime_settings,
+  write_runtime_settings,
+)
 from utils import run_aws, write_jsonl
 
 from quick_agent.input_adaptors import TextInput
 from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.orchestrator import Orchestrator
-
-CHAIN_AGENT_ID = "harness-language-chain-extractor"
-FILE_MANAGER_AGENT_ID = "harness-file-manager"
-FILE_MANAGER_INPUT = '{"directory": "bedrock", "search_name": "input", "append_text": "harness text\\n"}'
 
 
 async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]:
@@ -26,9 +26,9 @@ async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]
     while index < settings.count:
         input_text = settings.input_template.format(i=index)
         if index == 1:
-            request = await orchestrator.batch(CHAIN_AGENT_ID, TextInput(input_text))
+            request = await orchestrator.batch(settings.chain_agent_id, TextInput(input_text))
         elif index == 2:
-            request = await orchestrator.batch(FILE_MANAGER_AGENT_ID, TextInput(FILE_MANAGER_INPUT))
+            request = await orchestrator.batch(settings.file_manager_agent_id, TextInput(settings.file_manager_input))
         else:
             request = await orchestrator.batch(settings.agent, TextInput(input_text))
         requests.append(request)
@@ -41,6 +41,7 @@ async def generate(settings: HarnessSettings) -> None:
     rows: list[dict[str, object]] = []
     submit_rows: list[dict[str, object]] = []
     for request in requests:
+        request.validate_bedrock_model(settings.model_id)
         rows.append(request.jsonl_line)
         submit_rows.append(request.model_dump(mode="json"))
     write_jsonl(settings.input_jsonl, rows)

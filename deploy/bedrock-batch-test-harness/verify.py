@@ -18,13 +18,6 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_LANGUAGES = {"python", "typescript"}
 REQUIRED_DATABASES = {"mongodb", "sql"}
-CHAIN_AGENT_ID = "harness-language-chain-extractor"
-CHAIN_FIRST_STEP_ID = "generate-random-name"
-CHAIN_SECOND_STEP_ID = "tech-keyword-extraction"
-FILE_MANAGER_AGENT_ID = "file_manager_agent"
-FILE_MANAGER_INDEX = 2
-FILE_MANAGER_DIRECTORY = "bedrock"
-FILE_MANAGER_APPEND_TEXT = "harness probe"
 
 
 def _normalize(value: str) -> str:
@@ -184,7 +177,7 @@ def _validate_output_rows(
 
 
 def _validate_submit_rows(
-    rows: list[dict[str, object]], expected_count: int
+    rows: list[dict[str, object]], expected_count: int, settings: HarnessSettings
 ) -> tuple[set[str], str]:
     if len(rows) <= expected_count:
         raise ValueError(
@@ -205,29 +198,29 @@ def _validate_submit_rows(
         agent_id = _require_str(row, "agent_id", context=context)
         step_id = row.get("step_id")
         if index == 1:
-            if agent_id != CHAIN_AGENT_ID:
+            if agent_id != settings.chain_agent_id:
                 raise ValueError(
-                    f"{context}: expected second submit row agent_id={CHAIN_AGENT_ID}, got {agent_id}"
+                    f"{context}: expected second submit row agent_id={settings.chain_agent_id}, got {agent_id}"
                 )
-            if step_id != CHAIN_FIRST_STEP_ID:
+            if step_id != settings.chain_first_step_id:
                 raise ValueError(
-                    f"{context}: expected second submit row step_id={CHAIN_FIRST_STEP_ID}, got {step_id}"
+                    f"{context}: expected second submit row step_id={settings.chain_first_step_id}, got {step_id}"
                 )
             root_chain_id = request_id
-        if index == FILE_MANAGER_INDEX:
-            if agent_id != FILE_MANAGER_AGENT_ID:
+        if index == settings.file_manager_index:
+            if agent_id != settings.file_manager_agent_id:
                 raise ValueError(
-                    f"{context}: expected submit row index={FILE_MANAGER_INDEX} agent_id={FILE_MANAGER_AGENT_ID}, got {agent_id}"
+                    f"{context}: expected submit row index={settings.file_manager_index} agent_id={settings.file_manager_agent_id}, got {agent_id}"
                 )
             if row.get("tool_use_enabled") is not True:
                 raise ValueError(
-                    f"{context}: expected submit row index={FILE_MANAGER_INDEX} tool_use_enabled=True"
+                    f"{context}: expected submit row index={settings.file_manager_index} tool_use_enabled=True"
                 )
-        if agent_id == FILE_MANAGER_AGENT_ID and index >= expected_count:
+        if agent_id == settings.file_manager_agent_id and index >= expected_count:
             file_manager_follow_up_found = True
         if (
-            agent_id == CHAIN_AGENT_ID
-            and step_id == CHAIN_SECOND_STEP_ID
+            agent_id == settings.chain_agent_id
+            and step_id == settings.chain_second_step_id
             and index >= expected_count
         ):
             context_obj = _require_dict(row, "context", context=context)
@@ -235,15 +228,15 @@ def _validate_submit_rows(
                 context_obj, "state", context=f"{context} context"
             )
             steps_obj = _require_dict(state_obj, "steps", context=f"{context} state")
-            random_name_obj = steps_obj.get(CHAIN_FIRST_STEP_ID)
+            random_name_obj = steps_obj.get(settings.chain_first_step_id)
             if not isinstance(random_name_obj, dict):
                 raise ValueError(
-                    f"{context}: expected dict state for step {CHAIN_FIRST_STEP_ID}"
+                    f"{context}: expected dict state for step {settings.chain_first_step_id}"
                 )
             random_name = random_name_obj.get("name")
             if not isinstance(random_name, str) or not random_name.strip():
                 raise ValueError(
-                    f"{context}: expected non-empty random name in state for {CHAIN_FIRST_STEP_ID}"
+                    f"{context}: expected non-empty random name in state for {settings.chain_first_step_id}"
                 )
             chain_follow_up_found = True
         index += 1
@@ -261,14 +254,14 @@ def _validate_submit_rows(
 
 
 def _validate_outcome_rows(
-    rows: list[dict[str, object]], expected_count: int, chain_index: int
-) -> tuple[dict[int, list[str]], dict[int, TechKeywords]]:
+    rows: list[dict[str, object]], expected_count: int, chain_index: int, settings: HarnessSettings
+) -> tuple[dict[int, list[str]], dict[int, object]]:
     if len(rows) != expected_count:
         raise ValueError(
             f"outcome row count mismatch: expected={expected_count}, actual={len(rows)}"
         )
     warnings_by_index: dict[int, list[str]] = {}
-    keywords_by_index: dict[int, TechKeywords] = {}
+    keywords_by_index: dict[int, object] = {}
     index = 0
     while index < len(rows):
         row = rows[index]
@@ -283,18 +276,18 @@ def _validate_outcome_rows(
             raise ValueError(
                 f"{context}: next_request is not expected in this harness flow"
             )
-        if index == FILE_MANAGER_INDEX:
+        if index == settings.file_manager_index:
             result = row["result"]
             if not isinstance(result, str) or not result.strip():
                 raise ValueError(f"{context}: file manager result must be a non-empty string")
             lower = result.lower()
-            if FILE_MANAGER_DIRECTORY not in lower:
+            if settings.file_manager_directory not in lower:
                 raise ValueError(
-                    f"{context}: file manager result missing expected directory={FILE_MANAGER_DIRECTORY!r}"
+                    f"{context}: file manager result missing expected directory={settings.file_manager_directory!r}"
                 )
-            if FILE_MANAGER_APPEND_TEXT not in lower:
+            if settings.file_manager_append_text not in lower:
                 raise ValueError(
-                    f"{context}: file manager result missing append confirmation={FILE_MANAGER_APPEND_TEXT!r}"
+                    f"{context}: file manager result missing append confirmation={settings.file_manager_append_text!r}"
                 )
             warnings_by_index[index] = []
             index += 1
@@ -329,6 +322,7 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
 
 def verify(
     *,
+    settings: HarnessSettings,
     input_jsonl: Path,
     submit_requests_jsonl: Path,
     output_jsonl: Path,
@@ -356,7 +350,7 @@ def verify(
       input_errors.append(str(error))
 
     try:
-      submit_ids, _ = _validate_submit_rows(submit_rows, expected_count)
+      submit_ids, _ = _validate_submit_rows(submit_rows, expected_count, settings)
     except ValueError as error:
       submit_errors.append(str(error))
 
@@ -371,7 +365,7 @@ def verify(
 
     try:
       warnings_by_index, keywords_by_index = _validate_outcome_rows(
-        outcome_rows, expected_count, chain_index=1
+        outcome_rows, expected_count, chain_index=1, settings=settings
       )
       for warnings_list in warnings_by_index.values():
         outcome_warnings.extend(warnings_list)
@@ -477,6 +471,7 @@ def run(settings: HarnessSettings) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     result = verify(
+        settings=settings,
         input_jsonl=settings.input_jsonl,
         submit_requests_jsonl=settings.submit_requests_jsonl,
         output_jsonl=settings.output_jsonl,
@@ -510,7 +505,11 @@ def run(settings: HarnessSettings) -> None:
         agent_id = row.get("agent_id")
         step_id = row.get("step_id")
         if isinstance(request_id, str) and isinstance(agent_id, str):
-          tracker.add_submit_request(request_id, agent_id, step_id)
+          tracker.add_submit_request(
+            request_id,
+            agent_id,
+            step_id if isinstance(step_id, str) else None,
+          )
           tracker.set_input_status(request_id, request_id, input_status)
           tracker.set_output_status(request_id, output_status, input_errors_str or output_errors_str)
 

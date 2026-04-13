@@ -4,15 +4,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-
-HARNESS_AWS_PROFILE = "quick-agent-bedrock-deployer"
-HARNESS_AWS_REGION = "us-east-1"
-HARNESS_POLL_SECONDS = 30
-HARNESS_TIMEOUT_SECONDS = 36000
 
 
 @dataclass(frozen=True)
@@ -43,6 +37,20 @@ class HarnessSettings:
     input_jsonl: Path
     output_jsonl: Path
     outcomes_jsonl: Path
+    harness_aws_profile: str = "quick-agent-bedrock-deployer"
+    harness_aws_region: str = "us-east-1"
+    harness_poll_seconds: int = 30
+    harness_timeout_seconds: int = 36000
+    chain_agent_id: str = "harness-language-chain-extractor"
+    chain_first_step_id: str = "generate-random-name"
+    chain_second_step_id: str = "tech-keyword-extraction"
+    file_manager_agent_id: str = "harness-file-manager"
+    file_manager_index: int = 2
+    file_manager_directory: str = "bedrock"
+    file_manager_append_text: str = "harness probe"
+    file_manager_input: str = Path(__file__).resolve().parent.joinpath("file_manager_input.json").read_text(
+        encoding="utf-8"
+    )
 
     @property
     def runtime_settings_path(self) -> Path:
@@ -118,16 +126,16 @@ def load_settings(*, fixture_name: str) -> HarnessSettings:
         agents_dir=repo_root / _required_str(fixture_data, "agents_dir"),
         tools_dir=repo_root / _required_str(fixture_data, "tools_dir"),
         safe_dir=safe_dir,
-        aws_profile=HARNESS_AWS_PROFILE,
+        aws_profile=HarnessSettings.harness_aws_profile,
         model_id=_required_str(fixture_data, "model_id"),
-        region=HARNESS_AWS_REGION,
+        region=HarnessSettings.harness_aws_region,
         role_arn=_required_str(fixture_data, "role_arn"),
         s3_input_uri=_required_str(fixture_data, "s3_input_uri"),
         s3_output_uri=_required_str(fixture_data, "s3_output_uri"),
         input_template=_required_str(fixture_data, "input_template"),
         count=_required_int(fixture_data, "count"),
-        poll_seconds=HARNESS_POLL_SECONDS,
-        timeout_seconds=HARNESS_TIMEOUT_SECONDS,
+        poll_seconds=HarnessSettings.harness_poll_seconds,
+        timeout_seconds=HarnessSettings.harness_timeout_seconds,
         probe_input=_required_str(fixture_data, "probe_input"),
         job_name=job_name,
         submit_requests_jsonl=harness_root / "runtime" / "submit-requests-100.jsonl",

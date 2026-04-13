@@ -172,6 +172,27 @@ class BatchSubmitRequest(BaseModel):
             return "open_weight_invoke"
         return "converse"
 
+    def validate_bedrock_model(self, bedrock_model_id: str) -> None:
+        actual = self._resolve_bedrock_request_mode()
+        check = self.model_copy(
+            update={
+                "model": self.model.model_copy(
+                    update={
+                        "model_name": bedrock_model_id,
+                        "bedrock_request_mode": None,
+                        "extra_body": None,
+                    }
+                )
+            }
+        )
+        required = check._resolve_bedrock_request_mode()
+        if actual != required:
+            raise ValueError(
+                f"agent_id='{self.agent_id}' model_name='{self.model.model_name}' resolves to '{actual}' format "
+                f"but bedrock_model_id='{bedrock_model_id}' requires '{required}' format. "
+                f"Update the agent model config to match the deployed Bedrock model."
+            )
+
     def _build_converse_jsonl_line(self) -> dict[str, object]:
         converse_msgs: list[dict[str, object]] = []
         system_blocks: list[dict[str, object]] = []
