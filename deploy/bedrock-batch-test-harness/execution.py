@@ -285,19 +285,44 @@ def _load_jsonl(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def _has_tool_use(model_output: dict[str, object]) -> bool:
+def _has_tool_use_anthropic(model_output: dict[str, object]) -> bool:
     content = model_output.get("content")
-    if isinstance(content, list):
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "tool_use":
-                    return True
-                if "toolUse" in item:
-                    return True
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content)
+
+
+def _has_tool_use_converse(model_output: dict[str, object]) -> bool:
+    content = model_output.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(item, dict) and "toolUse" in item for item in content)
+
+
+def _has_tool_use_openai(model_output: dict[str, object]) -> bool:
+    choices = model_output.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return True
     return False
 
 
-def _extract_tool_calls(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
+def _has_tool_use(model_output: dict[str, object]) -> bool:
+    return (
+        _has_tool_use_anthropic(model_output)
+        or _has_tool_use_converse(model_output)
+        or _has_tool_use_openai(model_output)
+    )
+
+
+def _extract_tool_calls_anthropic(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
     calls: list[dict[str, JsonValue]] = []
     content = model_output.get("content")
     if not isinstance(content, list):
@@ -305,45 +330,109 @@ def _extract_tool_calls(model_output: dict[str, object]) -> list[dict[str, JsonV
     for item in content:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "tool_use":
-            id_val = item.get("id")
-            name_val = item.get("name")
-            input_val = item.get("input")
+        if item.get("type") != "tool_use":
+            continue
+        id_val = item.get("id")
+        name_val = item.get("name")
+        input_val = item.get("input")
+        calls.append(
+            {
+                "id": id_val
+                if isinstance(id_val, (str, int, float, bool)) or id_val is None
+                else str(id_val),
+                "name": name_val
+                if isinstance(name_val, (str, int, float, bool)) or name_val is None
+                else str(name_val),
+                "arguments": input_val
+                if isinstance(input_val, (dict, list, str, int, float, bool))
+                or input_val is None
+                else str(input_val),
+            }
+        )
+    return calls
+
+
+def _extract_tool_calls_converse(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
+    calls: list[dict[str, JsonValue]] = []
+    content = model_output.get("content")
+    if not isinstance(content, list):
+        return calls
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if "toolUse" not in item:
+            continue
+        tool_use = item["toolUse"]
+        if not isinstance(tool_use, dict):
+            continue
+        tu_id = tool_use.get("toolUseId")
+        tu_name = tool_use.get("name")
+        tu_input = tool_use.get("input")
+        calls.append(
+            {
+                "id": tu_id
+                if isinstance(tu_id, (str, int, float, bool)) or tu_id is None
+                else str(tu_id),
+                "name": tu_name
+                if isinstance(tu_name, (str, int, float, bool))
+                or tu_name is None
+                else str(tu_name),
+                "arguments": tu_input
+                if isinstance(tu_input, (dict, list, str, int, float, bool))
+                or tu_input is None
+                else str(tu_input),
+            }
+        )
+    return calls
+
+
+def _extract_tool_calls_openai(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
+    calls: list[dict[str, JsonValue]] = []
+    choices = model_output.get("choices")
+    if not isinstance(choices, list):
+        return calls
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        tool_calls_list = message.get("tool_calls")
+        if not isinstance(tool_calls_list, list):
+            continue
+        for tc in tool_calls_list:
+            if not isinstance(tc, dict):
+                continue
+            tc_id = tc.get("id")
+            func = tc.get("function")
+            if not isinstance(func, dict):
+                continue
+            name_val = func.get("name")
+            args_val = func.get("arguments")
+            parsed_args: JsonValue = args_val
+            if isinstance(args_val, str):
+                try:
+                    parsed_args = json.loads(args_val)
+                except json.JSONDecodeError:
+                    parsed_args = args_val
             calls.append(
                 {
-                    "id": id_val
-                    if isinstance(id_val, (str, int, float, bool)) or id_val is None
-                    else str(id_val),
+                    "id": tc_id
+                    if isinstance(tc_id, (str, int, float, bool)) or tc_id is None
+                    else str(tc_id),
                     "name": name_val
                     if isinstance(name_val, (str, int, float, bool)) or name_val is None
                     else str(name_val),
-                    "arguments": input_val
-                    if isinstance(input_val, (dict, list, str, int, float, bool))
-                    or input_val is None
-                    else str(input_val),
+                    "arguments": parsed_args,
                 }
             )
-        elif "toolUse" in item:
-            tool_use = item["toolUse"]
-            if isinstance(tool_use, dict):
-                tu_id = tool_use.get("toolUseId")
-                tu_name = tool_use.get("name")
-                tu_input = tool_use.get("input")
-                calls.append(
-                    {
-                        "id": tu_id
-                        if isinstance(tu_id, (str, int, float, bool)) or tu_id is None
-                        else str(tu_id),
-                        "name": tu_name
-                        if isinstance(tu_name, (str, int, float, bool))
-                        or tu_name is None
-                        else str(tu_name),
-                        "arguments": tu_input
-                        if isinstance(tu_input, (dict, list, str, int, float, bool))
-                        or tu_input is None
-                        else str(tu_input),
-                    }
-                )
+    return calls
+
+
+def _extract_tool_calls(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
+    calls = _extract_tool_calls_anthropic(model_output)
+    calls.extend(_extract_tool_calls_converse(model_output))
+    calls.extend(_extract_tool_calls_openai(model_output))
     return calls
 
 

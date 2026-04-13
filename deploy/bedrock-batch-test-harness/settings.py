@@ -139,9 +139,9 @@ def load_settings(*, fixture_name: str) -> HarnessSettings:
         probe_input=_required_str(fixture_data, "probe_input"),
         job_name=job_name,
         submit_requests_jsonl=harness_root / "runtime" / "submit-requests-100.jsonl",
-        input_jsonl=safe_dir / "bedrock" / "input-100.jsonl",
-        output_jsonl=safe_dir / "bedrock" / "output-100.jsonl",
-        outcomes_jsonl=safe_dir / "bedrock" / "import-outcomes-100.jsonl",
+        input_jsonl=harness_root / "runtime" / "input-100.jsonl",
+        output_jsonl=harness_root / "runtime" / "output-100.jsonl",
+        outcomes_jsonl=harness_root / "runtime" / "import-outcomes-100.jsonl",
     )
 
 
