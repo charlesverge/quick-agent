@@ -416,56 +416,86 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
     round_index = 1
     while current_requests:
         if round_index == 1:
-            rows = _run_batch_job(
-                settings=settings,
-                input_s3_uri=settings.s3_input_uri,
-                input_jsonl_path=settings.input_jsonl,
-                output_path=settings.output_jsonl,
-                job_name=settings.job_name,
-            )
+            round1_output_path = settings.runtime_dir / "output-round-1.jsonl"
+            if round1_output_path.exists():
+                logger.info(
+                    f"execution: reusing existing round 1 output > path={round1_output_path}"
+                )
+                rows = _load_jsonl(round1_output_path)
+            else:
+                rows = _run_batch_job(
+                    settings=settings,
+                    input_s3_uri=settings.s3_input_uri,
+                    input_jsonl_path=settings.input_jsonl,
+                    output_path=round1_output_path,
+                    job_name=settings.job_name,
+                )
         else:
             round_input_name = f"input-round-{round_index}.jsonl"
             round_input_path = settings.runtime_dir / round_input_name
-            submitted_requests: list[BatchSubmitRequest] = list(current_requests)
-            if len(submitted_requests) < settings.count:
-                logger.info(
-                    f"execution: padding round {round_index} requests from {len(submitted_requests)} to {settings.count}"
-                )
-            while len(submitted_requests) < settings.count:
-                padded_request = padding_template.model_copy(
-                    update={
-                        "request_id": f"{settings.agent}-{uuid4()}",
-                    }
-                )
-                root_ids[padded_request.request_id] = padded_request.request_id
-                submitted_requests.append(padded_request)
-            round_rows: list[dict[str, object]] = []
-            for request in submitted_requests:
-                round_rows.append(request.jsonl_line)
-            write_jsonl(round_input_path, round_rows)
+            round_output_path = settings.runtime_dir / f"output-round-{round_index}.jsonl"
             bucket, key = _parse_s3_uri(settings.s3_input_uri)
             key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
             if key_prefix:
                 round_s3_uri = f"s3://{bucket}/{key_prefix}/{round_input_name}"
             else:
                 round_s3_uri = f"s3://{bucket}/{round_input_name}"
-            logger.info(f"execution: uploading round input > s3_uri={round_s3_uri}")
-            run_aws(
-                ["s3", "cp", str(round_input_path), round_s3_uri],
-                profile=settings.aws_profile,
-                region=settings.region,
-            )
-            round_output_path = (
-                settings.runtime_dir / f"output-round-{round_index}.jsonl"
-            )
-            round_job_name = f"{settings.job_name}-r{round_index}"
-            rows = _run_batch_job(
-                settings=settings,
-                input_s3_uri=round_s3_uri,
-                input_jsonl_path=round_input_path,
-                output_path=round_output_path,
-                job_name=round_job_name,
-            )
+            if round_output_path.exists():
+                logger.info(
+                    f"execution: reusing existing round {round_index} output > path={round_output_path}"
+                )
+                loaded_input_rows = _load_jsonl(round_input_path)
+                submitted_requests: list[BatchSubmitRequest] = [
+                    BatchSubmitRequest.model_validate(r) for r in loaded_input_rows
+                ]
+                for req in submitted_requests:
+                    if req.request_id not in root_ids:
+                        root_ids[req.request_id] = req.request_id
+                rows = _load_jsonl(round_output_path)
+            else:
+                if round_input_path.exists():
+                    logger.info(
+                        f"execution: reusing existing round {round_index} input > path={round_input_path}"
+                    )
+                    loaded_input_rows = _load_jsonl(round_input_path)
+                    submitted_requests = [
+                        BatchSubmitRequest.model_validate(r) for r in loaded_input_rows
+                    ]
+                    for req in submitted_requests:
+                        if req.request_id not in root_ids:
+                            root_ids[req.request_id] = req.request_id
+                else:
+                    submitted_requests = list(current_requests)
+                    if len(submitted_requests) < settings.count:
+                        logger.info(
+                            f"execution: padding round {round_index} requests from {len(submitted_requests)} to {settings.count}"
+                        )
+                    while len(submitted_requests) < settings.count:
+                        padded_request = padding_template.model_copy(
+                            update={
+                                "request_id": f"{settings.agent}-{uuid4()}",
+                            }
+                        )
+                        root_ids[padded_request.request_id] = padded_request.request_id
+                        submitted_requests.append(padded_request)
+                    round_rows: list[dict[str, object]] = []
+                    for request in submitted_requests:
+                        round_rows.append(request.jsonl_line)
+                    write_jsonl(round_input_path, round_rows)
+                logger.info(f"execution: uploading round input > s3_uri={round_s3_uri}")
+                run_aws(
+                    ["s3", "cp", str(round_input_path), round_s3_uri],
+                    profile=settings.aws_profile,
+                    region=settings.region,
+                )
+                round_job_name = f"{settings.job_name}-r{round_index}"
+                rows = _run_batch_job(
+                    settings=settings,
+                    input_s3_uri=round_s3_uri,
+                    input_jsonl_path=round_input_path,
+                    output_path=round_output_path,
+                    job_name=round_job_name,
+                )
             all_submit_requests.extend(submitted_requests)
             current_requests = submitted_requests
         all_output_rows.extend(rows)
