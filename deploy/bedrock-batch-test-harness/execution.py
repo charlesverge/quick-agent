@@ -322,117 +322,24 @@ def _has_tool_use(model_output: dict[str, object]) -> bool:
     )
 
 
-def _extract_tool_calls_anthropic(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
-    calls: list[dict[str, JsonValue]] = []
+def _raw_tool_calls(model_output: dict[str, object]) -> list[JsonValue]:
+    calls: list[JsonValue] = []
     content = model_output.get("content")
-    if not isinstance(content, list):
-        return calls
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") != "tool_use":
-            continue
-        id_val = item.get("id")
-        name_val = item.get("name")
-        input_val = item.get("input")
-        calls.append(
-            {
-                "id": id_val
-                if isinstance(id_val, (str, int, float, bool)) or id_val is None
-                else str(id_val),
-                "name": name_val
-                if isinstance(name_val, (str, int, float, bool)) or name_val is None
-                else str(name_val),
-                "arguments": input_val
-                if isinstance(input_val, (dict, list, str, int, float, bool))
-                or input_val is None
-                else str(input_val),
-            }
-        )
-    return calls
-
-
-def _extract_tool_calls_converse(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
-    calls: list[dict[str, JsonValue]] = []
-    content = model_output.get("content")
-    if not isinstance(content, list):
-        return calls
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if "toolUse" not in item:
-            continue
-        tool_use = item["toolUse"]
-        if not isinstance(tool_use, dict):
-            continue
-        tu_id = tool_use.get("toolUseId")
-        tu_name = tool_use.get("name")
-        tu_input = tool_use.get("input")
-        calls.append(
-            {
-                "id": tu_id
-                if isinstance(tu_id, (str, int, float, bool)) or tu_id is None
-                else str(tu_id),
-                "name": tu_name
-                if isinstance(tu_name, (str, int, float, bool))
-                or tu_name is None
-                else str(tu_name),
-                "arguments": tu_input
-                if isinstance(tu_input, (dict, list, str, int, float, bool))
-                or tu_input is None
-                else str(tu_input),
-            }
-        )
-    return calls
-
-
-def _extract_tool_calls_openai(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
-    calls: list[dict[str, JsonValue]] = []
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and (item.get("type") == "tool_use" or "toolUse" in item):
+                calls.append(item)
     choices = model_output.get("choices")
-    if not isinstance(choices, list):
-        return calls
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            continue
-        tool_calls_list = message.get("tool_calls")
-        if not isinstance(tool_calls_list, list):
-            continue
-        for tc in tool_calls_list:
-            if not isinstance(tc, dict):
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
                 continue
-            tc_id = tc.get("id")
-            func = tc.get("function")
-            if not isinstance(func, dict):
+            message = choice.get("message")
+            if not isinstance(message, dict):
                 continue
-            name_val = func.get("name")
-            args_val = func.get("arguments")
-            parsed_args: JsonValue = args_val
-            if isinstance(args_val, str):
-                try:
-                    parsed_args = json.loads(args_val)
-                except json.JSONDecodeError:
-                    parsed_args = args_val
-            calls.append(
-                {
-                    "id": tc_id
-                    if isinstance(tc_id, (str, int, float, bool)) or tc_id is None
-                    else str(tc_id),
-                    "name": name_val
-                    if isinstance(name_val, (str, int, float, bool)) or name_val is None
-                    else str(name_val),
-                    "arguments": parsed_args,
-                }
-            )
-    return calls
-
-
-def _extract_tool_calls(model_output: dict[str, object]) -> list[dict[str, JsonValue]]:
-    calls = _extract_tool_calls_anthropic(model_output)
-    calls.extend(_extract_tool_calls_converse(model_output))
-    calls.extend(_extract_tool_calls_openai(model_output))
+            tool_calls_list = message.get("tool_calls")
+            if isinstance(tool_calls_list, list):
+                calls.extend(tool_calls_list)
     return calls
 
 
@@ -460,7 +367,7 @@ def _to_import_request(row: dict[str, object]) -> BatchImportRequest:
     if not isinstance(model_output_obj, dict):
         raise ValueError("Bedrock row missing modelOutput object.")
     if _has_tool_use(model_output_obj):
-        tool_calls: list[JsonValue] = list(_extract_tool_calls(model_output_obj))
+        tool_calls: list[JsonValue] = _raw_tool_calls(model_output_obj)
         return BatchImportRequest(
             request_id=record_id,
             payload={"state": "tool_use", "tool_calls": tool_calls},
@@ -507,10 +414,17 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
         if round_index == 1:
             round1_output_path = settings.runtime_dir / "output-round-1.jsonl"
             if round1_output_path.exists():
+                rows = _load_jsonl(round1_output_path)
+                cached_ids = {r.get("recordId") for r in rows}
+                submit_ids = {req.request_id for req in current_requests}
+                if cached_ids != submit_ids:
+                    raise ValueError(
+                        f"Round 1 output recordIds do not match current submit requests. "
+                        f"Delete {round1_output_path} and re-run."
+                    )
                 logger.info(
                     f"execution: reusing existing round 1 output > path={round1_output_path}"
                 )
-                rows = _load_jsonl(round1_output_path)
             else:
                 rows = _run_batch_job(
                     settings=settings,
@@ -523,6 +437,7 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
             round_input_name = f"input-round-{round_index}.jsonl"
             round_input_path = settings.runtime_dir / round_input_name
             round_output_path = settings.runtime_dir / f"output-round-{round_index}.jsonl"
+            submit_round_path = settings.runtime_dir / f"submit-round-{round_index}.jsonl"
             bucket, key = _parse_s3_uri(settings.s3_input_uri)
             key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
             if key_prefix:
@@ -530,25 +445,71 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
             else:
                 round_s3_uri = f"s3://{bucket}/{round_input_name}"
             if round_output_path.exists():
+                if not round_input_path.exists():
+                    raise ValueError(
+                        f"Round {round_index} output exists but input file is missing: {round_input_path}"
+                    )
+                cached_input_rows = _load_jsonl(round_input_path)
+                cached_output_rows = _load_jsonl(round_output_path)
+                input_ids = {r.get("recordId") for r in cached_input_rows}
+                output_ids = {r.get("recordId") for r in cached_output_rows}
+                if input_ids != output_ids:
+                    raise ValueError(
+                        f"Round {round_index} output recordIds do not match input recordIds. "
+                        f"Delete {round_output_path} and re-run."
+                    )
                 logger.info(
                     f"execution: reusing existing round {round_index} output > path={round_output_path}"
                 )
-                loaded_input_rows = _load_jsonl(round_input_path)
-                submitted_requests: list[BatchSubmitRequest] = [
-                    BatchSubmitRequest.model_validate(r) for r in loaded_input_rows
-                ]
-                for req in submitted_requests:
-                    if req.request_id not in root_ids:
-                        root_ids[req.request_id] = req.request_id
-                rows = _load_jsonl(round_output_path)
+                if submit_round_path.exists():
+                    submitted_requests: list[BatchSubmitRequest] = [
+                        BatchSubmitRequest.model_validate(r) for r in _load_jsonl(submit_round_path)
+                    ]
+                    for req in submitted_requests:
+                        if req.request_id not in root_ids:
+                            root_ids[req.request_id] = req.request_id
+                else:
+                    logger.info(
+                        f"execution: reconstructing round {round_index} submit requests from cached input > path={round_input_path}"
+                    )
+                    padded: list[BatchSubmitRequest] = list(current_requests)
+                    while len(padded) < len(cached_input_rows):
+                        pad_req = padding_template.model_copy(
+                            update={"request_id": f"{settings.agent}-{uuid4()}"}
+                        )
+                        padded.append(pad_req)
+                    if len(padded) != len(cached_input_rows):
+                        raise ValueError(
+                            f"Round {round_index}: reconstructed request count ({len(padded)}) "
+                            f"does not match cached input row count ({len(cached_input_rows)})"
+                        )
+                    submitted_requests = []
+                    for pos, req in enumerate(padded):
+                        record_id_val = cached_input_rows[pos].get("recordId")
+                        if not isinstance(record_id_val, str):
+                            raise ValueError(
+                                f"Round {round_index}: cached input row {pos} missing recordId"
+                            )
+                        old_id = req.request_id
+                        new_req = req.model_copy(update={"request_id": record_id_val})
+                        if old_id in root_ids:
+                            root_ids[record_id_val] = root_ids[old_id]
+                        else:
+                            root_ids[record_id_val] = record_id_val
+                        submitted_requests.append(new_req)
+                rows = cached_output_rows
             else:
                 if round_input_path.exists():
                     logger.info(
                         f"execution: reusing existing round {round_index} input > path={round_input_path}"
                     )
-                    loaded_input_rows = _load_jsonl(round_input_path)
+                    if not submit_round_path.exists():
+                        raise ValueError(
+                            f"Round {round_index} submit requests file is missing: {submit_round_path}. "
+                            f"Delete round {round_index} input and re-run."
+                        )
                     submitted_requests = [
-                        BatchSubmitRequest.model_validate(r) for r in loaded_input_rows
+                        BatchSubmitRequest.model_validate(r) for r in _load_jsonl(submit_round_path)
                     ]
                     for req in submitted_requests:
                         if req.request_id not in root_ids:
@@ -571,6 +532,10 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                     for request in submitted_requests:
                         round_rows.append(request.jsonl_line)
                     write_jsonl(round_input_path, round_rows)
+                    write_jsonl(
+                        submit_round_path,
+                        [req.model_dump(mode="json") for req in submitted_requests],
+                    )
                 logger.info(f"execution: uploading round input > s3_uri={round_s3_uri}")
                 run_aws(
                     ["s3", "cp", str(round_input_path), round_s3_uri],

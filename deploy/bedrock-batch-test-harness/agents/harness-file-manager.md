@@ -29,8 +29,8 @@ chain:
 
 # Output settings
 output:
-  format: "json"
-  file: "out/file_manager_result.json"
+  format: "text"
+  file: "out/file_manager_result.txt"
 ---
 
 # System Prompt

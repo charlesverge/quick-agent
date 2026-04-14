@@ -22,6 +22,7 @@ from quick_agent.agent_tools import AgentTools
 from quick_agent.agent_utils import (
     agent_results_to_str,
     extract_finish_reason,
+    normalize_tool_calls,
     normalize_usage_metrics,
     parse_structured_result,
 )
@@ -587,13 +588,11 @@ class QuickAgent:
                 raise ValueError(
                     "tool_use batch payload is missing list field 'tool_calls'."
                 )
-            tool_calls: list[dict[str, object]] = []
+            raw: list[dict[str, object]] = []
             for tc in tool_calls_obj:
                 if isinstance(tc, dict):
-                    tool_call_entry: dict[str, object] = {
-                        str(k): v for k, v in tc.items()
-                    }
-                    tool_calls.append(tool_call_entry)
+                    raw.append({str(k): v for k, v in tc.items()})
+            tool_calls = normalize_tool_calls(raw)
             pending_submit_request: BatchSubmitRequest | None = None
             submit_request_obj = payload.get("submit_request")
             if isinstance(submit_request_obj, dict):

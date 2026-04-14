@@ -1,0 +1,5 @@
+{
+  "directory": "agent_working_directory",
+  "search_name": "input_file2.md",
+  "append_text": "harness text\n"
+}

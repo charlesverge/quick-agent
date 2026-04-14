@@ -66,3 +66,59 @@ def agent_results_to_str(last_step_output: AgentResult) -> str:
     elif isinstance(last_step_output, (dict, list)):
         return json.dumps(last_step_output, indent=2)
     return str(last_step_output)
+
+
+def _normalize_anthropic(tc: dict[str, object]) -> dict[str, object] | None:
+    if tc.get("type") != "tool_use":
+        return None
+    id_val = tc.get("id")
+    name_val = tc.get("name")
+    input_val = tc.get("input")
+    return {
+        "id": id_val if isinstance(id_val, (str, int, float, bool)) or id_val is None else str(id_val),
+        "name": name_val if isinstance(name_val, (str, int, float, bool)) or name_val is None else str(name_val),
+        "arguments": input_val if isinstance(input_val, (dict, list, str, int, float, bool)) or input_val is None else str(input_val),
+    }
+
+
+def _normalize_converse(tc: dict[str, object]) -> dict[str, object] | None:
+    tool_use = tc.get("toolUse")
+    if not isinstance(tool_use, dict):
+        return None
+    tu_id = tool_use.get("toolUseId")
+    tu_name = tool_use.get("name")
+    tu_input = tool_use.get("input")
+    return {
+        "id": tu_id if isinstance(tu_id, (str, int, float, bool)) or tu_id is None else str(tu_id),
+        "name": tu_name if isinstance(tu_name, (str, int, float, bool)) or tu_name is None else str(tu_name),
+        "arguments": tu_input if isinstance(tu_input, (dict, list, str, int, float, bool)) or tu_input is None else str(tu_input),
+    }
+
+
+def _normalize_openai(tc: dict[str, object]) -> dict[str, object] | None:
+    func = tc.get("function")
+    if not isinstance(func, dict):
+        return None
+    tc_id = tc.get("id")
+    name_val = func.get("name")
+    args_val = func.get("arguments")
+    parsed_args: object = args_val
+    if isinstance(args_val, str):
+        try:
+            parsed_args = json.loads(args_val)
+        except json.JSONDecodeError:
+            parsed_args = args_val
+    return {
+        "id": tc_id if isinstance(tc_id, (str, int, float, bool)) or tc_id is None else str(tc_id),
+        "name": name_val if isinstance(name_val, (str, int, float, bool)) or name_val is None else str(name_val),
+        "arguments": parsed_args,
+    }
+
+
+def normalize_tool_calls(raw: list[dict[str, object]]) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for tc in raw:
+        normalized = _normalize_anthropic(tc) or _normalize_converse(tc) or _normalize_openai(tc)
+        if normalized is not None:
+            result.append(normalized)
+    return result

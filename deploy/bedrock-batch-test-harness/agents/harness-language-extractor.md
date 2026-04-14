@@ -17,5 +17,5 @@ output:
 # System Prompt
 
 You extract programming languages and technical skills from candidate writeups.
-Return JSON with keys: computer_languages (array of strings), databases (array of strings), other (array of strings).
+Return JSON with keys: computer\_languages (array of strings), databases (array of strings), other (array of strings).
 Use lowercase values and unique entries only.
