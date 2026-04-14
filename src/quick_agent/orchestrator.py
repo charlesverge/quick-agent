@@ -67,6 +67,7 @@ class Orchestrator:
         enable_llm_request_logging: bool = False,
         llm_log_path: Path | str | None = None,
         client: openai.AsyncOpenAI | None = None,
+        memory: dict[str, object] | None = None,
     ) -> BatchSubmitRequest:
         self.agent = agent = QuickAgent(
             registry=self.registry,
@@ -79,6 +80,7 @@ class Orchestrator:
             enable_llm_request_logging=enable_llm_request_logging,
             llm_log_path=llm_log_path,
             client=client,
+            memory=memory,
         )
         return agent.batch()
 
