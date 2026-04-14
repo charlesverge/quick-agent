@@ -19,8 +19,9 @@ from quick_agent.orchestrator import Orchestrator
 from quick_agent.quick_agent import QuickAgent
 
 
-async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]:
-    if settings.count < 4:
+async def _build_requests(settings: HarnessSettings, reserved: int = 0) -> list[BatchSubmitRequest]:
+    limit = settings.count - reserved
+    if limit < 4:
         raise ValueError("Harness count must be at least 4 for chain-agent, file-manager, and agent-memory coverage.")
     orchestrator = Orchestrator(
         [settings.agents_dir], [settings.tools_dir], safe_dir=settings.safe_dir
@@ -28,7 +29,7 @@ async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]
     agent_memory_tools = AgentTools([settings.repo_root / "examples" / "agent_memory"])
     requests: list[BatchSubmitRequest] = []
     index = 0
-    while index < settings.count:
+    while index < limit:
         input_text = settings.input_template.format(i=index)
         if index == 1:
             request = await orchestrator.batch(settings.chain_agent_id, TextInput(input_text))
@@ -52,8 +53,8 @@ async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]
     return requests
 
 
-async def generate(settings: HarnessSettings) -> None:
-    requests = await _build_requests(settings)
+async def generate(settings: HarnessSettings, reserved: int = 0) -> None:
+    requests = await _build_requests(settings, reserved)
     rows: list[dict[str, object]] = []
     submit_rows: list[dict[str, object]] = []
     for request in requests:
@@ -72,7 +73,7 @@ def upload_input(settings: HarnessSettings) -> None:
     )
 
 
-def run(settings: HarnessSettings) -> HarnessSettings:
+def run(settings: HarnessSettings, reserved: int = 0) -> HarnessSettings:
     if not settings.terraform_dir.exists():
         raise ValueError(f"Terraform directory not found: {settings.terraform_dir}")
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,5 @@ def run(settings: HarnessSettings) -> HarnessSettings:
     shutil.copytree(settings.harness_root / "fixtures" / "file-manager-dir", settings.safe_dir)
     resolved = resolve_runtime_settings(settings)
     write_runtime_settings(resolved)
-    anyio.run(generate, resolved)
-    upload_input(resolved)
+    anyio.run(generate, resolved, reserved)
     return resolved

@@ -405,14 +405,15 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
             f"Unable to find padding template request for agent_id={settings.agent}"
         )
     registry = AgentRegistry([settings.agents_dir])
-    tools = AgentTools([settings.tools_dir])
+    tools = AgentTools([settings.tools_dir, settings.repo_root / "examples" / "agent_memory"])
     directory_permissions = DirectoryPermissions(settings.safe_dir)
     final_outcomes: dict[str, dict[str, object]] = {}
     all_output_rows: list[dict[str, object]] = []
     round_index = 1
     while current_requests:
+        current_output_path = settings.runtime_dir / f"output-round-{round_index}.jsonl"
         if round_index == 1:
-            round1_output_path = settings.runtime_dir / "output-round-1.jsonl"
+            round1_output_path = current_output_path
             if round1_output_path.exists():
                 rows = _load_jsonl(round1_output_path)
                 cached_ids = {r.get("recordId") for r in rows}
@@ -561,36 +562,50 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
         row_index = 0
         while row_index < len(rows):
             row = rows[row_index]
-            batch_import = _to_import_request(row)
-            submit_request = current_index.get(batch_import.request_id)
-            if submit_request is None:
+            request_id = "unknown"
+            agent_id = "unknown"
+            try:
+                batch_import = _to_import_request(row)
+                request_id = batch_import.request_id
+                submit_request = current_index.get(request_id)
+                if submit_request is None:
+                    raise ValueError(
+                        f"Missing submit request context for recordId={request_id}"
+                    )
+                agent_id = submit_request.agent_id
+                seen_ids.add(request_id)
+                context = submit_request.context
+                agent = QuickAgent(
+                    registry=registry,
+                    tools=tools,
+                    directory_permissions=directory_permissions,
+                    agent_id=agent_id,
+                    input_data=TextInput(context.input_text),
+                    extra_tools=context.extra_tools,
+                    memory=dict(context.memory),
+                )
+                agent.load_batch_context(context=context)
+                batch_import_to_use = batch_import
+                if batch_import.payload.get("state") == "tool_use":
+                    submit_dump: dict[str, JsonValue] = submit_request.model_dump(
+                        mode="json"
+                    )
+                    augmented_payload: dict[str, JsonValue] = dict(batch_import.payload)
+                    augmented_payload["submit_request"] = submit_dump
+                    batch_import_to_use = BatchImportRequest(
+                        request_id=request_id,
+                        provider_job_id=batch_import.provider_job_id,
+                        payload=augmented_payload,
+                    )
+                outcome = await agent.import_result(batch_import=batch_import_to_use)
+            except Exception as err:
                 raise ValueError(
-                    f"Missing submit request context for recordId={batch_import.request_id}"
-                )
-            seen_ids.add(batch_import.request_id)
-            context = submit_request.context
-            agent = QuickAgent(
-                registry=registry,
-                tools=tools,
-                directory_permissions=directory_permissions,
-                agent_id=submit_request.agent_id,
-                input_data=TextInput(context.input_text),
-                extra_tools=context.extra_tools,
-            )
-            agent.load_batch_context(context=context)
-            batch_import_to_use = batch_import
-            if batch_import.payload.get("state") == "tool_use":
-                submit_dump: dict[str, JsonValue] = submit_request.model_dump(
-                    mode="json"
-                )
-                augmented_payload: dict[str, JsonValue] = dict(batch_import.payload)
-                augmented_payload["submit_request"] = submit_dump
-                batch_import_to_use = BatchImportRequest(
-                    request_id=batch_import.request_id,
-                    provider_job_id=batch_import.provider_job_id,
-                    payload=augmented_payload,
-                )
-            outcome = await agent.import_result(batch_import=batch_import_to_use)
+                    f"agent={agent_id}"
+                    f" request_id={request_id}"
+                    f" round={round_index} row={row_index}"
+                    f" file={current_output_path}:{row_index + 1}"
+                    f" > {err}"
+                ) from err
             if outcome.next_request is not None:
                 next_request = outcome.next_request
                 root_id = root_ids[submit_request.request_id]

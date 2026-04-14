@@ -14,7 +14,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 import execution as execution_stage
 import setup as setup_stage
+import setup_code_rule as setup_code_rule_stage
 import verify as verify_stage
+import verify_code_rule as verify_code_rule_stage
 from settings import HarnessSettings
 from settings import load_runtime_settings
 from settings import load_settings
@@ -84,9 +86,13 @@ def main() -> int:
     active_settings = settings
     try:
         if run_setup:
+            n_code_rules = len(setup_code_rule_stage._list_pairs(active_settings.harness_root))
             logger.info("stage: setup > start")
-            active_settings = setup_stage.run(active_settings)
+            active_settings = setup_stage.run(active_settings, reserved=n_code_rules)
             logger.info("stage: setup > complete")
+            logger.info("stage: setup code-rules > start")
+            setup_code_rule_stage.run(active_settings)
+            logger.info("stage: setup code-rules > complete")
         elif run_execution or run_verify:
             active_settings = load_runtime_settings(harness_root=settings.harness_root)
 
@@ -99,6 +105,9 @@ def main() -> int:
             logger.info("stage: verify > start")
             verify_stage.run(active_settings)
             logger.info("stage: verify > complete")
+            logger.info("stage: verify code-rules > start")
+            verify_code_rule_stage.run(active_settings)
+            logger.info("stage: verify code-rules > complete")
 
         if args.no_tear_down:
             logger.info("lifecycle: no-tear-down enabled")
