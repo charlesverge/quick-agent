@@ -8,6 +8,9 @@ import logging
 import shutil
 import sys
 from datetime import datetime
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 import execution as execution_stage
 import setup as setup_stage
