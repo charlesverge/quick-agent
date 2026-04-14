@@ -294,7 +294,6 @@ def _make_quick_agent_for_test(
     *,
     loaded: LoadedAgentFile | None = None,
     run_input: RunInput | None = None,
-    model: OpenAIChatModel | None = None,
     toolset: FunctionToolset[Any] | None = None,
     batch_call: Callable[..., object] | None = None,
     memory: dict[str, Any] | None = None,
@@ -326,8 +325,6 @@ def _make_quick_agent_for_test(
     agent._executor.config.batch_call = batch_call
     agent.run_input = run_input
     agent.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
-    if model is not None:
-        agent.model = model
     if toolset is not None:
         agent.toolset = toolset
     return agent
@@ -700,7 +697,6 @@ async def test_run_text_step_raises_for_missing_section(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -738,7 +734,6 @@ async def test_run_step_text_returns_output(monkeypatch: pytest.MonkeyPatch) -> 
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -782,7 +777,6 @@ async def test_run_text_step_omits_tools_when_disabled(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
@@ -842,7 +836,6 @@ async def test_run_step_structured_parses_json_with_fallback(
     try:
         qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
-        qa.model = cast(OpenAIChatModel, object())
         qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
         qa._executor.context.model_settings_json = {"extra_body": {"format": "json"}}
         qa.toolset = RecordingToolset()
@@ -869,7 +862,6 @@ async def test_run_step_unknown_kind_raises(monkeypatch: pytest.MonkeyPatch) -> 
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
@@ -906,7 +898,6 @@ async def test_run_text_step_uses_make_user_prompt(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -966,7 +957,6 @@ async def test_run_text_step_no_instructions_or_system_prompt(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1022,7 +1012,6 @@ async def test_run_text_step_system_prompt_only(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1076,7 +1065,6 @@ async def test_run_text_step_instructions_only(monkeypatch: pytest.MonkeyPatch) 
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1127,11 +1115,9 @@ async def test_run_text_step_logs_llm_request_payload_immediately(
         enable_llm_request_logging=True,
         llm_log_path=log_path,
     )
-    qa._agent_id = "agent-1"
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
-    qa._recorder._agent_id = qa._agent_id
+    qa._recorder._agent_id = "agent-1"
     qa._recorder.model_spec = qa.model_spec
     qa._recorder.effective_base_url = qa._executor.context.effective_base_url
     qa.toolset = RecordingToolset()
@@ -1169,7 +1155,6 @@ async def test_run_structured_step_missing_schema_raises() -> None:
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = run_input
@@ -1222,7 +1207,6 @@ async def test_run_structured_step_parses_json(monkeypatch: pytest.MonkeyPatch) 
     try:
         qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
-        qa.model = cast(OpenAIChatModel, object())
         qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
@@ -1284,7 +1268,6 @@ async def test_run_structured_step_adds_json_schema_for_openai(
     try:
         qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
-        qa.model = cast(OpenAIChatModel, DummyOpenAIModel("https://api.openai.com/v1"))
         qa.model_spec = ModelSpec(base_url="https://api.openai.com/v1", model_name="m")
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
@@ -1311,7 +1294,6 @@ async def test_run_chain_updates_state_and_returns_last() -> None:
 
     qa = RecordingQuickAgent(outputs=[({"a": 1}, "first"), ("b", "second")])
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
@@ -1717,7 +1699,6 @@ async def test_run_chain_single_shot_system_prompt_only(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://x"))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1770,7 +1751,6 @@ async def test_run_chain_single_shot_instructions_only(
 
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, DummyOpenAIModel("http://x"))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1828,7 +1808,6 @@ async def test_run_text_step_maps_tools_not_supported_to_quick_agent_exception(
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="deepseek-r1:14b")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1888,7 +1867,6 @@ async def test_run_single_shot_maps_chat_not_supported_to_quick_agent_exception(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = ModelSpec(base_url="http://x", model_name="nomic-embed-text:v1.5")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -1954,7 +1932,6 @@ async def test_run_single_shot_structured_uses_schema_output_type(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2029,7 +2006,6 @@ async def test_run_single_shot_structured_passes_timeout_to_openai_sdk(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2081,7 +2057,6 @@ async def test_run_single_shot_structured_parses_json_with_fallback(
     run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2122,7 +2097,6 @@ async def test_run_single_shot_structured_rejects_tools() -> None:
         batch_call=batch_call,
     )
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.run_input = run_input
     qa.tool_ids = ["agent_call"]
@@ -2163,7 +2137,6 @@ async def test_run_single_shot_structured_still_uses_batch_call_when_flag_enable
         batch_call=batch_call,
     )
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, types.SimpleNamespace(client=None))
     qa.model_spec = spec.model
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2217,7 +2190,6 @@ async def test_run_text_step_propagates_unexpected_model_behavior_with_request_c
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2334,7 +2306,6 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
     run_input = RunInput(source_path="in.json", kind="json", text="{}", data={})
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
     qa.loaded = loaded
-    qa.model = cast(OpenAIChatModel, object())
     qa.model_spec = ModelSpec(base_url="http://base.invalid/v1", model_name="m")
     qa.toolset = RecordingToolset()
     qa.tool_ids = []
@@ -2399,6 +2370,7 @@ def test_write_last_step_output_serializes_model(tmp_path: Path) -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
+    assert qa.loaded.spec.output.file is not None
     result_path = write_output(
         qa.loaded.spec.output.file,
         OutputSchema(msg="hi"),
@@ -2420,6 +2392,7 @@ def test_write_last_step_output_writes_text(tmp_path: Path) -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.loaded = loaded
     qa.permissions = permissions
+    assert qa.loaded.spec.output.file is not None
     result_path = write_output(
         qa.loaded.spec.output.file,
         "hello",
@@ -3321,7 +3294,7 @@ def test_import_outcome_handles_tool_use_state() -> None:
         request_id="r1",
         payload={
             "state": "tool_use",
-            "tool_calls": [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}],
+            "tool_calls": [{"id": "call1", "type": "function", "function": {"name": "tool_name", "arguments": {"x": 1}}}],
             "submit_request": submit_request.model_dump(mode="json"),
         },
     )
@@ -3353,7 +3326,7 @@ def test_build_next_request_with_tool_results_extends_messages() -> None:
         user_prompt="user prompt",
         model_settings=None,
     )
-    tool_calls = [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}]
+    tool_calls: list[dict[str, object]] = [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}]
     executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
     next_req = qa._executor._build_next_request_with_tool_results(
         tool_calls=tool_calls,
