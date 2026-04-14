@@ -5,18 +5,12 @@ import types
 from pathlib import Path
 
 import pytest
-
 from pydantic import BaseModel
 
-from quick_agent import agent_registry
-from quick_agent import io_utils
-from quick_agent import prompting
-from quick_agent import tools_loader
+from quick_agent import agent_registry, io_utils, prompting, tools_loader
 from quick_agent.directory_permissions import DirectoryPermissions
-from quick_agent.models import AgentSpec
-from quick_agent.models import ChainStepSpec
-from quick_agent.models import LoadedAgentFile
-from quick_agent.models import ModelSpec
+from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
+from quick_agent.models.loaded_agent_file import load_agent_frontmatter, parse_agent_sections, resolve_includes
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.quick_agent import resolve_schema
@@ -46,7 +40,9 @@ Hello one.
 
 Hello two.
 """
-    sections = agent_registry.split_step_sections(body)
+
+    sections = agent_registry.split_step_sections(body, safe_dir=".")
+
     assert sections["step:one"] == "Hello one."
     assert sections["step:two"] == "Hello two."
 
@@ -162,6 +158,26 @@ body.
     assert loaded.spec.name == "Test"
     assert loaded.instructions == "system."
     assert loaded.step_prompts["step:one"] == "body."
+
+
+def test_resolve_includes_reads_relative_md_files() -> None:
+    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "agent_parser"
+    main_file = fixture_dir / "include_main.md"
+
+    resolved = resolve_includes(str(main_file), safe_dir=str(fixture_dir))
+
+    assert resolved == "Main content.\nIncluded content.\n\nEnd.\n"
+
+
+def test_parse_agent_sections_resolves_includes_in_agent_file() -> None:
+    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "agent_parser"
+    agent_file = fixture_dir / "agent_with_include.md"
+
+    post, _ = load_agent_frontmatter(str(agent_file))
+    sections = parse_agent_sections(post.content, safe_dir=str(fixture_dir))
+
+    assert sections.instructions == "Intro."
+    assert sections.step_prompts["step:one"] == "Say hi."
 
 
 def test_load_agent_file_model_defaults_when_missing(tmp_path: Path) -> None:

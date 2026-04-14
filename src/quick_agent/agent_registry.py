@@ -7,18 +7,9 @@ from pathlib import Path
 
 from yaml.parser import ParserError
 
-from quick_agent.models.loaded_agent_file import LoadedAgentFile, parse_agent_sections
+from quick_agent.models.loaded_agent_file import LoadedAgentFile
 
 logger = logging.getLogger(__name__)
-
-
-def split_step_sections(markdown_body: str) -> dict[str, str]:
-    """
-    Extracts blocks that begin with headings like "# step:<id>".
-    Returns mapping: "step:<id>" -> content for that step (excluding heading line).
-    """
-    sections = parse_agent_sections(markdown_body)
-    return sections.step_prompts
 
 
 class AgentRegistry:

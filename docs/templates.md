@@ -73,6 +73,27 @@ Each step in `chain` must reference a matching `prompt_section` in the body:
 ## step:<id>
 ```
 
+## File includes
+
+Agent markdown may include external files using the `{! path/to/file.md !}` syntax.
+Included files are resolved relative to the agent file directory and are processed before section parsing.
+
+Example:
+
+```markdown
+## Instructions
+
+Use the included content below.
+
+{! snippets/instructions.md !}
+
+## step:draft
+
+Write a first draft.
+```
+
+In this example, `snippets/instructions.md` is loaded into the agent body at the include location.
+
 ## Tools
 
 Tools are loaded by `name` from `tool.json` files.

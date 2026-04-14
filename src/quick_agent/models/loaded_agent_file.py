@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,6 @@ from pathlib import Path
 import frontmatter
 
 from quick_agent.models.agent_spec import AgentSpec
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,8 @@ class LoadedAgentFile:
     def __init__(self, agent: Path | str) -> None:
         post, source_label = load_agent_frontmatter(agent)
         spec = AgentSpec.model_validate(post.metadata)
-        sections = parse_agent_sections(post.content)
+        safe_dir = str(Path(agent).parent)
+        sections = parse_agent_sections(post.content, safe_dir=safe_dir)
         if sections.first_section_start is not None and (
             sections.instructions_start is not None or sections.system_prompt_start is not None
         ):
@@ -120,7 +121,7 @@ def parse_fence_marker(line: str) -> tuple[str, int] | None:
     return (marker_char, marker_len)
 
 
-def parse_agent_sections(markdown_body: str) -> ParsedAgentSections:
+def parse_agent_sections(markdown_body: str, safe_dir: str) -> ParsedAgentSections:
     recognized: list[tuple[str, str, int, int]] = []
     instructions_start: int | None = None
     system_prompt_start: int | None = None
@@ -128,6 +129,8 @@ def parse_agent_sections(markdown_body: str) -> ParsedAgentSections:
     active_fence_char = ""
     active_fence_len = 0
     offset = 0
+
+    markdown_body = resolve_includes(markdown_body, safe_dir)
 
     for line in markdown_body.splitlines(keepends=True):
         fence_marker = parse_fence_marker(line)
@@ -191,3 +194,56 @@ def parse_agent_sections(markdown_body: str) -> ParsedAgentSections:
         system_prompt_start=system_prompt_start,
         first_section_start=first_section_start,
     )
+
+def resolve_includes(filename, safe_dir, seen=None):
+    if seen is None:
+        seen = set()
+
+    # 1. Normalize and resolve paths (resolves symlinks and ../)
+    abs_safe_dir = os.path.realpath(safe_dir)
+
+    if os.path.exists(filename):
+        abs_target_path = os.path.realpath(filename)
+
+        # 2. SAFE DIR CHECK: Ensure the file is inside the safe directory
+        if not abs_target_path.startswith(abs_safe_dir):
+            return f"<!-- Access Denied: {filename} is outside safe directory -->"
+
+        # 3. INFINITY CHECK: Prevent circular references
+        if abs_target_path in seen:
+            return f"<!-- Circular reference detected: {filename} -->"
+
+        if not os.path.exists(abs_target_path):
+            return f"<!-- File not found: {filename} -->"
+
+        # Track this file in the current branch
+        seen.add(abs_target_path)
+
+        with open(abs_target_path, 'r') as f:
+            content = f.read()
+
+        current_file_dir = os.path.dirname(abs_target_path)
+    else:
+        looks_like_markdown = (
+            "\n" in filename
+            or "\r" in filename
+            or filename.lstrip().startswith("#")
+            or "{!" in filename
+        )
+        if not looks_like_markdown:
+            return f"<!-- File not found: {filename} -->"
+
+        content = filename
+        current_file_dir = abs_safe_dir
+
+    pattern = re.compile(r'\{!\s*(.*?)\s*!\}')
+
+    def replace_match(match):
+        include_path = match.group(1)
+        # Resolve path relative to the file containing the include
+        full_include_path = os.path.join(current_file_dir, include_path)
+
+        # Pass a copy of 'seen' so siblings can share sub-includes
+        return resolve_includes(full_include_path, abs_safe_dir, seen.copy())
+
+    return pattern.sub(replace_match, content)
