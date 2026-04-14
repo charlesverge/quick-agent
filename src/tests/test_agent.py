@@ -7,10 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from quick_agent import agent_registry, io_utils, prompting, tools_loader
+from quick_agent import io_utils, prompting, tools_loader
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
-from quick_agent.models.loaded_agent_file import load_agent_frontmatter, parse_agent_sections, resolve_includes
+from quick_agent.models.loaded_agent_file import (
+    load_agent_frontmatter,
+    parse_agent_sections,
+    resolve_includes,
+)
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.quick_agent import resolve_schema
@@ -41,7 +45,7 @@ Hello one.
 Hello two.
 """
 
-    sections = agent_registry.split_step_sections(body, safe_dir=".")
+    sections = parse_agent_sections(body, safe_dir=".").step_prompts
 
     assert sections["step:one"] == "Hello one."
     assert sections["step:two"] == "Hello two."

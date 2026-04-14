@@ -214,6 +214,7 @@ class QuickAgent:
             "steps": steps,
             "last_step_output": last_step_output,
         }
+        self._executor.config.state = self.state
 
     async def _write_output_handoff(self, output) -> AgentResult:
         if self._write_output_file:
@@ -501,6 +502,7 @@ class QuickAgent:
             context=BatchAgentContext(
                 input_text=self.run_input.text,
                 state=state,
+                memory=dict(self._memory),
                 safe_dir=self.loaded.spec.safe_dir,
                 extra_tools=list(self._extra_tools or []),
             ),
@@ -652,16 +654,15 @@ class QuickAgent:
         result = result_outcome.result
         if result is None:
             raise ValueError("Import result did not produce output.")
+        if result_outcome.next_request is not None:
+            return BatchImportOutcome(result=result, next_request=result_outcome.next_request)
         finalized = self._finalize_output_contract(result)
         if self._write_output_file:
             output_file = self.loaded.spec.output.file
             if output_file is None:
                 raise ValueError("Output file is not configured.")
             write_output(output_file, finalized, self.permissions)
-        return BatchImportOutcome(
-            result=finalized,
-            next_request=result_outcome.next_request,
-        )
+        return BatchImportOutcome(result=finalized)
 
     def _import_single_shot_result(self, raw_result: AgentResult) -> BatchImportOutcome:
         schema_name = self.loaded.spec.output.output_schema
@@ -811,14 +812,18 @@ class QuickAgent:
             raise ValueError("JSON output requires a JSON object result.")
         if output_format == "markdown":
             if not isinstance(output, str):
-                raise ValueError("Text output must be a string.")
+                raise ValueError(
+                    f"Text output must be a string (format=markdown, got {type(output).__name__})."
+                )
             return output
         if output_format == "structured":
             if not isinstance(output, BaseModel):
                 raise ValueError("Structured output requires a BaseModel result.")
             return output
         if not isinstance(output, str):
-            raise ValueError("Text output must be a string.")
+            raise ValueError(
+                f"Text output must be a string (format=text, got {type(output).__name__})."
+            )
         return output
 
     def _capture_metrics(self, *, usage: object, response: object | None) -> None:

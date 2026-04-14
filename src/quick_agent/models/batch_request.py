@@ -46,6 +46,7 @@ class BatchModelConfig(BaseModel):
 class BatchAgentContext(BaseModel):
     input_text: str = ""
     state: dict[str, object] = Field(default_factory=dict)
+    memory: dict[str, object] = Field(default_factory=dict)
     safe_dir: str | None = None
     extra_tools: list[str] = Field(default_factory=list)
 

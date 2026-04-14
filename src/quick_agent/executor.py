@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+import typing
 from typing import Any, Callable, Type
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from openai.types.shared_params.function_definition import FunctionDefinition
 from pydantic import BaseModel, JsonValue
 
 from quick_agent.agent_config import AgentConfig
+from quick_agent.agent_state import AgentState
 from quick_agent.agent_execution_context import AgentExecutionContext
 from quick_agent.agent_utils import (
     extract_finish_reason,
@@ -127,17 +129,20 @@ class AgentExecutor:
                 except (json.JSONDecodeError, ValueError):
                     pass
             try:
-                if tool.takes_ctx:
-                    results.append(
-                        ToolCallResult(
-                            id=tc_id,
-                            name=tc_name,
-                            error=f"Context-aware tool '{tc_name}' is not supported in batch mode.",
-                        )
-                    )
-                    continue
                 plain_func: Callable[..., Any] = tool.function
-                if inspect.iscoroutinefunction(tool.function):
+                sig = inspect.signature(plain_func)
+                try:
+                    hints = typing.get_type_hints(plain_func)
+                except Exception:
+                    hints = {}
+                first_param = next(iter(sig.parameters), None)
+                if first_param is not None and hints.get(first_param) is AgentState:
+                    state = AgentState(memory=self.config.memory)
+                    if inspect.iscoroutinefunction(plain_func):
+                        output = await plain_func(state, **args)
+                    else:
+                        output = plain_func(state, **args)
+                elif inspect.iscoroutinefunction(plain_func):
                     output = await plain_func(**args)
                 else:
                     output = plain_func(**args)
@@ -235,6 +240,7 @@ class AgentExecutor:
             context=BatchAgentContext(
                 input_text=self.config.run_input.text,
                 state=state,
+                memory=dict(self.config.memory),
                 safe_dir=self.config.loaded.spec.safe_dir,
                 extra_tools=list(self.config.extra_tools or []),
             ),
