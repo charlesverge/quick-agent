@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 import anyio
 from settings import (
   HarnessSettings,
@@ -10,17 +12,20 @@ from settings import (
 )
 from utils import run_aws, write_jsonl
 
+from quick_agent.agent_tools import AgentTools
 from quick_agent.input_adaptors import TextInput
 from quick_agent.models.batch_request import BatchSubmitRequest
 from quick_agent.orchestrator import Orchestrator
+from quick_agent.quick_agent import QuickAgent
 
 
 async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]:
-    if settings.count < 3:
-        raise ValueError("Harness count must be at least 3 for chain-agent and file-manager coverage.")
+    if settings.count < 4:
+        raise ValueError("Harness count must be at least 4 for chain-agent, file-manager, and agent-memory coverage.")
     orchestrator = Orchestrator(
         [settings.agents_dir], [settings.tools_dir], safe_dir=settings.safe_dir
     )
+    agent_memory_tools = AgentTools([settings.repo_root / "examples" / "agent_memory"])
     requests: list[BatchSubmitRequest] = []
     index = 0
     while index < settings.count:
@@ -29,6 +34,17 @@ async def _build_requests(settings: HarnessSettings) -> list[BatchSubmitRequest]
             request = await orchestrator.batch(settings.chain_agent_id, TextInput(input_text))
         elif index == 2:
             request = await orchestrator.batch(settings.file_manager_agent_id, TextInput(settings.file_manager_input))
+        elif index == settings.agent_memory_index:
+            agent = QuickAgent(
+                registry=orchestrator.registry,
+                tools=agent_memory_tools,
+                directory_permissions=orchestrator.directory_permissions,
+                agent_id=settings.agent_memory_agent_id,
+                input_data=TextInput(settings.probe_input),
+                extra_tools=None,
+                memory={"first_name": settings.agent_memory_first_name},
+            )
+            request = agent.batch()
         else:
             request = await orchestrator.batch(settings.agent, TextInput(input_text))
         requests.append(request)
@@ -61,7 +77,9 @@ def run(settings: HarnessSettings) -> HarnessSettings:
         raise ValueError(f"Terraform directory not found: {settings.terraform_dir}")
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
-    (settings.safe_dir / "bedrock").mkdir(parents=True, exist_ok=True)
+    if settings.safe_dir.exists():
+        shutil.rmtree(settings.safe_dir)
+    shutil.copytree(settings.harness_root / "fixtures" / "file-manager-dir", settings.safe_dir)
     resolved = resolve_runtime_settings(settings)
     write_runtime_settings(resolved)
     anyio.run(generate, resolved)

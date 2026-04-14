@@ -46,9 +46,12 @@ class HarnessSettings:
     chain_second_step_id: str = "tech-keyword-extraction"
     file_manager_agent_id: str = "harness-file-manager"
     file_manager_index: int = 2
-    file_manager_directory: str = "bedrock"
-    file_manager_append_text: str = "harness probe"
-    file_manager_input: str = Path(__file__).resolve().parent.joinpath("file_manager_input.json").read_text(
+    file_manager_directory: str = "agent_working_directory"
+    file_manager_append_text: str = "text to append"
+    agent_memory_agent_id: str = "harness-agent-memory"
+    agent_memory_index: int = 3
+    agent_memory_first_name: str = "Charles"
+    file_manager_input: str = Path(__file__).resolve().parent.joinpath("fixtures/file_manager_input.json").read_text(
         encoding="utf-8"
     )
 

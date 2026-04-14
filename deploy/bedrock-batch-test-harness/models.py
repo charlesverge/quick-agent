@@ -26,6 +26,28 @@ class StageResult:
 
 
 @dataclass
+class OutcomeRowsResult:
+  """Result of validating outcome rows."""
+
+  warnings_by_index: dict[int, list[str]] = field(default_factory=dict)
+  keywords_by_index: dict[int, object] = field(default_factory=dict)
+  errors_by_index: dict[int, str] = field(default_factory=dict)
+
+  @property
+  def success_count(self) -> int:
+    total = len(self.warnings_by_index) + len(self.keywords_by_index)
+    return total - len(self.errors_by_index)
+
+  @property
+  def total_count(self) -> int:
+    return len(self.warnings_by_index) + len(self.keywords_by_index)
+
+  @property
+  def success_pct(self) -> int:
+    return int(100 * self.success_count / self.total_count) if self.total_count else 0
+
+
+@dataclass
 class VerificationResult:
   """Overall verification result."""
 

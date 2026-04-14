@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from models import StageResult, VerificationResult
+from models import OutcomeRowsResult, StageResult, VerificationResult
 from pydantic import ValidationError
 from schemas.tech_keywords import TechKeywords
 from settings import HarnessSettings
@@ -255,54 +255,85 @@ def _validate_submit_rows(
 
 def _validate_outcome_rows(
     rows: list[dict[str, object]], expected_count: int, chain_index: int, settings: HarnessSettings
-) -> tuple[dict[int, list[str]], dict[int, object]]:
+) -> OutcomeRowsResult:
     if len(rows) != expected_count:
         raise ValueError(
             f"outcome row count mismatch: expected={expected_count}, actual={len(rows)}"
         )
-    warnings_by_index: dict[int, list[str]] = {}
-    keywords_by_index: dict[int, object] = {}
+    result = OutcomeRowsResult()
     index = 0
     while index < len(rows):
         row = rows[index]
         context = f"outcome row index={index}"
-        has_result = row.get("result") is not None
-        has_next = row.get("next_request") is not None
-        if not has_result:
-            raise ValueError(
-                f"{context}: missing result"
-            )
-        if has_next:
-            raise ValueError(
-                f"{context}: next_request is not expected in this harness flow"
-            )
-        if index == settings.file_manager_index:
-            result = row["result"]
-            if not isinstance(result, str) or not result.strip():
-                raise ValueError(f"{context}: file manager result must be a non-empty string")
-            lower = result.lower()
-            if settings.file_manager_directory not in lower:
-                raise ValueError(
-                    f"{context}: file manager result missing expected directory={settings.file_manager_directory!r}"
-                )
-            if settings.file_manager_append_text not in lower:
-                raise ValueError(
-                    f"{context}: file manager result missing append confirmation={settings.file_manager_append_text!r}"
-                )
-            warnings_by_index[index] = []
-            index += 1
-            continue
-        tech_keywords = _parse_tech_keywords(row["result"], context=context)
-        row_warnings = _validate_tech_keywords(tech_keywords, context=context)
-        warnings_by_index[index] = row_warnings
-        keywords_by_index[index] = tech_keywords
-        if index == chain_index:
-            if not tech_keywords.computer_languages:
-                raise ValueError(
-                    f"{context}: chain final output missing computer_languages values"
-                )
+        try:
+            has_result = row.get("result") is not None
+            has_next = row.get("next_request") is not None
+            if not has_result:
+                raise ValueError(f"{context}: missing result")
+            if has_next:
+                raise ValueError(f"{context}: next_request is not expected in this harness flow")
+            if index == settings.file_manager_index:
+                file_result = row["result"]
+                if not isinstance(file_result, str) or not file_result.strip():
+                    raise ValueError(f"{context}: file manager result must be a non-empty string")
+                lower = file_result.lower()
+                if settings.file_manager_directory not in lower:
+                    raise ValueError(
+                        f"{context}: file manager result missing expected directory={settings.file_manager_directory!r}"
+                    )
+                if settings.file_manager_append_text not in lower:
+                    raise ValueError(
+                        f"{context}: file manager result missing append confirmation={settings.file_manager_append_text!r}"
+                    )
+                result.warnings_by_index[index] = []
+                index += 1
+                continue
+            if index == settings.agent_memory_index:
+                memory_result = row["result"]
+                if not isinstance(memory_result, str) or not memory_result.strip():
+                    raise ValueError(f"{context}: agent memory result must be a non-empty string")
+                expected_prefix = f"{settings.agent_memory_first_name} your random word is "
+                if not memory_result.lower().startswith(expected_prefix.lower()):
+                    raise ValueError(
+                        f"{context}: agent memory result does not match expected pattern "
+                        f"{expected_prefix!r}, got {memory_result!r}"
+                    )
+                word = memory_result[len(expected_prefix):].strip()
+                if not word:
+                    raise ValueError(f"{context}: agent memory result missing random word after prefix")
+                result.warnings_by_index[index] = []
+                index += 1
+                continue
+            tech_keywords = _parse_tech_keywords(row["result"], context=context)
+            row_warnings = _validate_tech_keywords(tech_keywords, context=context)
+            result.warnings_by_index[index] = row_warnings
+            result.keywords_by_index[index] = tech_keywords
+            if index == chain_index:
+                if not tech_keywords.computer_languages:
+                    raise ValueError(f"{context}: chain final output missing computer_languages values")
+        except ValueError as row_error:
+            result.errors_by_index[index] = str(row_error)
         index += 1
-    return warnings_by_index, keywords_by_index
+    return result
+
+
+def _validate_file_manager_file(settings: HarnessSettings) -> None:
+    input_data = json.loads(settings.file_manager_input)
+    if not isinstance(input_data, dict):
+        raise ValueError("file_manager_input is not a JSON object")
+    directory = input_data.get("directory")
+    search_name = input_data.get("search_name")
+    append_text = input_data.get("append_text")
+    if not isinstance(directory, str) or not isinstance(search_name, str) or not isinstance(append_text, str):
+        raise ValueError("file_manager_input missing required string fields: directory, search_name, append_text")
+    file_path = settings.safe_dir / directory / search_name
+    if not file_path.exists():
+        raise ValueError(f"file manager target file not found: {file_path}")
+    content = file_path.read_text(encoding="utf-8")
+    if append_text not in content:
+        raise ValueError(
+            f"file manager target file {search_name!r} missing expected append_text={append_text!r}"
+        )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
@@ -364,12 +395,19 @@ def verify(
       output_errors.append(str(error))
 
     try:
-      warnings_by_index, keywords_by_index = _validate_outcome_rows(
+      outcome_rows_result = _validate_outcome_rows(
         outcome_rows, expected_count, chain_index=1, settings=settings
       )
-      for warnings_list in warnings_by_index.values():
+      for warnings_list in outcome_rows_result.warnings_by_index.values():
         outcome_warnings.extend(warnings_list)
-      outcome_keywords = keywords_by_index
+      outcome_keywords = outcome_rows_result.keywords_by_index
+      warnings_by_index = outcome_rows_result.warnings_by_index
+      if outcome_rows_result.errors_by_index:
+        for idx, msg in outcome_rows_result.errors_by_index.items():
+          outcome_errors.append(msg)
+        outcome_errors.append(
+          f"outcome row success rate: {outcome_rows_result.success_count}/{outcome_rows_result.total_count} ({outcome_rows_result.success_pct}%)"
+        )
     except ValueError as error:
       outcome_errors.append(str(error))
 
@@ -478,6 +516,12 @@ def run(settings: HarnessSettings) -> None:
         outcomes_jsonl=settings.outcomes_jsonl,
         expected_count=settings.count,
     )
+
+    try:
+        _validate_file_manager_file(settings)
+    except ValueError as file_error:
+        result.errors.append(str(file_error))
+        result.passed = False
 
     formatted_output = _format_results(result)
     print(formatted_output, file=sys.stdout)
