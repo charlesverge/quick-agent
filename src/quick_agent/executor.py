@@ -26,6 +26,10 @@ from pydantic import BaseModel, JsonValue
 from quick_agent.agent_config import AgentConfig
 from quick_agent.agent_execution_context import AgentExecutionContext
 from quick_agent.agent_state import AgentState
+from quick_agent.agent_tool_schema import (
+    strip_agent_state_from_schema,
+    takes_agent_state,
+)
 from quick_agent.agent_utils import (
     _as_agent_result,
     extract_finish_reason,
@@ -134,13 +138,7 @@ class AgentExecutor:
                     pass
             try:
                 plain_func: Callable[..., Any] = tool.function
-                sig = inspect.signature(plain_func)
-                try:
-                    hints = typing.get_type_hints(plain_func)
-                except Exception:
-                    hints = {}
-                first_param = next(iter(sig.parameters), None)
-                if first_param is not None and hints.get(first_param) is AgentState:
+                if takes_agent_state(plain_func):
                     state = AgentState(memory=self.config.memory)
                     if inspect.iscoroutinefunction(plain_func):
                         output = await plain_func(state, **args)
@@ -381,10 +379,13 @@ class AgentExecutor:
         tools_payload: list[ChatCompletionToolUnionParam] = []
         if self.config.toolset is not None and self.config.tool_ids:
             for tool in self.config.toolset.tools.values():
+                params = tool.function_schema.json_schema
+                if takes_agent_state(tool.function):
+                    params = strip_agent_state_from_schema(params)
                 function_def = FunctionDefinition(
                     name=tool.name,
                     description=tool.description or "",
-                    parameters=tool.function_schema.json_schema,
+                    parameters=params,
                 )
                 tools_payload.append(
                     ChatCompletionFunctionToolParam(
