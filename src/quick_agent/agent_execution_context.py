@@ -89,22 +89,21 @@ class AgentExecutionContext:
             if model_settings is None:
                 model_settings_dict: ModelSettings = {}
             else:
-                model_settings_dict = model_settings
+                model_settings_dict = model_settings.copy()
             extra_body_obj = model_settings_dict.get("extra_body")
             extra_body: dict[str, object] = {}
             if isinstance(extra_body_obj, dict):
                 extra_body = dict(extra_body_obj)
-            if "response_format" not in extra_body:
-                schema = schema_cls.model_json_schema()
-                self._apply_strict_schema(schema)
-                extra_body["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_cls.__name__,
-                        "schema": schema,
-                        "strict": True,
-                    },
-                }
+            schema = schema_cls.model_json_schema()
+            self._apply_strict_schema(schema)
+            extra_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_cls.__name__,
+                    "schema": schema,
+                    "strict": True,
+                },
+            }
             model_settings_dict["extra_body"] = extra_body
             model_settings = model_settings_dict
         return model_settings

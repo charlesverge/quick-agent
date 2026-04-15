@@ -8,7 +8,6 @@ import openai
 from pydantic import JsonValue
 from pydantic_ai.toolsets import FunctionToolset
 
-from quick_agent.models.batch_request import BatchImportOutcome
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.run_input import RunInput
@@ -33,5 +32,4 @@ class AgentConfig:
     extra_tools: list[str] | None
     recorder: Recorder | None
     state: object
-    import_outcome: Callable[..., BatchImportOutcome]
     batch_call: Callable[..., object] | None = None

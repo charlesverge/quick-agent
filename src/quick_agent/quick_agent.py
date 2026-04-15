@@ -20,6 +20,7 @@ from quick_agent.agent_model_utils import resolve_schema
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.agent_utils import (
+    _as_agent_result,
     agent_results_to_str,
     extract_finish_reason,
     normalize_tool_calls,
@@ -144,7 +145,6 @@ class QuickAgent:
             extra_tools=self._extra_tools,
             recorder=None,
             state=self.state,
-            import_outcome=self._import_outcome,
         )
         self._executor = AgentExecutor(config=executor_config)
         self._recorder: Recorder = Recorder(
@@ -555,81 +555,10 @@ class QuickAgent:
             model_settings=model_settings,
         )
 
-    def _import_outcome(
-        self, *, batch_import: BatchImportRequest
-    ) -> BatchImportOutcome:
-        payload = batch_import.payload
-        state_obj = payload.get("state")
-        if not isinstance(state_obj, str):
-            raise ValueError("Batch import payload is missing string field 'state'.")
-        if state_obj == "error":
-            message_obj = payload.get("message")
-            if not isinstance(message_obj, str):
-                raise ValueError(
-                    "Error batch payload is missing string field 'message'."
-                )
-            mapped_error = self._executor._map_model_error_message(message_obj)
-            if mapped_error is not None:
-                raise mapped_error
-            raise ValueError(message_obj)
-        if state_obj == "completed":
-            if "output" not in payload:
-                raise ValueError("Completed batch payload is missing 'output'.")
-            return BatchImportOutcome(result=self._as_agent_result(payload["output"]))
-        if state_obj == "submit_next":
-            next_request_obj = payload.get("next_request")
-            if not isinstance(next_request_obj, dict):
-                raise ValueError(
-                    "submit_next batch payload is missing object field 'next_request'."
-                )
-            next_request = BatchSubmitRequest.model_validate(next_request_obj)
-            return BatchImportOutcome(next_request=next_request)
-        if state_obj == "tool_use":
-            tool_calls_obj = payload.get("tool_calls")
-            if not isinstance(tool_calls_obj, list):
-                raise ValueError(
-                    "tool_use batch payload is missing list field 'tool_calls'."
-                )
-            raw: list[dict[str, object]] = []
-            for tc in tool_calls_obj:
-                if isinstance(tc, dict):
-                    raw.append({str(k): v for k, v in tc.items()})
-            tool_calls = normalize_tool_calls(raw)
-            pending_submit_request: BatchSubmitRequest | None = None
-            submit_request_obj = payload.get("submit_request")
-            if isinstance(submit_request_obj, dict):
-                pending_submit_request = BatchSubmitRequest.model_validate(
-                    submit_request_obj
-                )
-            return BatchImportOutcome(
-                tool_calls=tool_calls,
-                pending_submit_request=pending_submit_request,
-            )
-        raise ValueError(f"Unsupported batch import state: {state_obj}")
-
-    def _as_agent_result(self, value: object) -> AgentResult:
-        if isinstance(value, BaseModel):
-            return value
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            result: dict[str, object] = {}
-            for key, item in value.items():
-                result[str(key)] = item
-            return result
-        if isinstance(value, list):
-            items: list[AgentResult] = []
-            index = 0
-            while index < len(value):
-                items.append(self._as_agent_result(value[index]))
-                index += 1
-            return items
-        raise ValueError(f"Unsupported completed batch output type: {type(value)}")
-
     async def import_result(
         self, *, batch_import: BatchImportRequest
     ) -> BatchImportOutcome:
-        outcome = self._import_outcome(batch_import=batch_import)
+        outcome = self._executor.import_outcome(batch_import=batch_import)
         if outcome.tool_calls is not None:
             pending = outcome.pending_submit_request
             if pending is None:

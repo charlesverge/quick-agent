@@ -9,7 +9,6 @@ import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import FunctionToolset
@@ -3298,7 +3297,7 @@ def test_import_outcome_handles_tool_use_state() -> None:
             "submit_request": submit_request.model_dump(mode="json"),
         },
     )
-    outcome = qa._import_outcome(batch_import=batch_import)
+    outcome = qa._executor.import_outcome(batch_import=batch_import)
     assert outcome.tool_calls is not None
     assert len(outcome.tool_calls) == 1
     assert outcome.tool_calls[0]["id"] == "call1"
@@ -3312,7 +3311,58 @@ def test_import_outcome_tool_use_missing_tool_calls_raises() -> None:
         payload={"state": "tool_use"},
     )
     with pytest.raises(ValueError, match="tool_calls"):
-        qa._import_outcome(batch_import=batch_import)
+        qa._executor.import_outcome(batch_import=batch_import)
+
+
+def test_import_outcome_handles_openai_gpt_5_2_tool_call_format() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.create_batch_request_for_current_step(
+        step_id="summary_generation",
+        step_kind="text",
+        output_schema=None,
+        instructions="summarize",
+        system_prompt="system",
+        user_prompt="user prompt",
+        model_settings=None,
+    )
+    batch_import = BatchImportRequest(
+        request_id="r1",
+        payload={
+            "state": "tool_use",
+            "tool_calls": [
+                {
+                    "id": "call_WteJFS1sxnJQaP4dlwPhC1Ka",
+                    "name": "retrieve_markdown_summaries_for_urls",
+                    "arguments": json.dumps(
+                        {
+                            "urls": [
+                                "https://acme.example.com/",
+                                "https://acme.example.com/about",
+                                "https://acme.example.com/careers",
+                            ]
+                        }
+                    ),
+                }
+            ],
+            "submit_request": submit_request.model_dump(mode="json"),
+        },
+    )
+
+    outcome = qa._executor.import_outcome(batch_import=batch_import)
+
+    assert outcome.tool_calls is not None
+    assert len(outcome.tool_calls) == 1
+    assert outcome.tool_calls[0]["id"] == "call_WteJFS1sxnJQaP4dlwPhC1Ka"
+    assert outcome.tool_calls[0]["name"] == "retrieve_markdown_summaries_for_urls"
+    assert isinstance(outcome.tool_calls[0]["arguments"], dict)
+    assert outcome.tool_calls[0]["arguments"] == {
+        "urls": [
+            "https://acme.example.com/",
+            "https://acme.example.com/about",
+            "https://acme.example.com/careers",
+        ]
+    }
+    assert outcome.pending_submit_request is not None
 
 
 def test_build_next_request_with_tool_results_extends_messages() -> None:

@@ -4,8 +4,8 @@ import inspect
 import json
 import logging
 import os
-from dataclasses import dataclass
 import typing
+from dataclasses import dataclass
 from typing import Any, Callable, Type
 from uuid import uuid4
 
@@ -19,14 +19,17 @@ from openai.types.chat import (
     ChatCompletionToolUnionParam,
     ChatCompletionUserMessageParam,
 )
+from openai.types.chat.completion_create_params import ResponseFormat
 from openai.types.shared_params.function_definition import FunctionDefinition
 from pydantic import BaseModel, JsonValue
 
 from quick_agent.agent_config import AgentConfig
-from quick_agent.agent_state import AgentState
 from quick_agent.agent_execution_context import AgentExecutionContext
+from quick_agent.agent_state import AgentState
 from quick_agent.agent_utils import (
+    _as_agent_result,
     extract_finish_reason,
+    normalize_tool_calls,
     normalize_usage_metrics,
     parse_structured_result,
 )
@@ -38,6 +41,7 @@ from quick_agent.exceptions import (
 from quick_agent.json_utils import json_compatible_value
 from quick_agent.models.batch_request import (
     BatchAgentContext,
+    BatchImportOutcome,
     BatchImportRequest,
     BatchMessage,
     BatchSubmitRequest,
@@ -264,6 +268,56 @@ class AgentExecutor:
             return BatchImportRequest.model_validate(awaited)
         return BatchImportRequest.model_validate(response)
 
+    def import_outcome(self, *, batch_import: BatchImportRequest) -> BatchImportOutcome:
+        payload = batch_import.payload
+        state_obj = payload.get("state")
+        if not isinstance(state_obj, str):
+            raise ValueError("Batch import payload is missing string field 'state'.")
+        if state_obj == "error":
+            message_obj = payload.get("message")
+            if not isinstance(message_obj, str):
+                raise ValueError(
+                    "Error batch payload is missing string field 'message'."
+                )
+            mapped_error = self._map_model_error_message(message_obj)
+            if mapped_error is not None:
+                raise mapped_error
+            raise ValueError(message_obj)
+        if state_obj == "completed":
+            if "output" not in payload:
+                raise ValueError("Completed batch payload is missing 'output'.")
+            return BatchImportOutcome(result=_as_agent_result(payload["output"]))
+        if state_obj == "submit_next":
+            next_request_obj = payload.get("next_request")
+            if not isinstance(next_request_obj, dict):
+                raise ValueError(
+                    "submit_next batch payload is missing object field 'next_request'."
+                )
+            next_request = BatchSubmitRequest.model_validate(next_request_obj)
+            return BatchImportOutcome(next_request=next_request)
+        if state_obj == "tool_use":
+            tool_calls_obj = payload.get("tool_calls")
+            if not isinstance(tool_calls_obj, list):
+                raise ValueError(
+                    "tool_use batch payload is missing list field 'tool_calls'."
+                )
+            raw: list[dict[str, object]] = []
+            for tc in tool_calls_obj:
+                if isinstance(tc, dict):
+                    raw.append({str(k): v for k, v in tc.items()})
+            tool_calls = normalize_tool_calls(raw)
+            pending_submit_request: BatchSubmitRequest | None = None
+            submit_request_obj = payload.get("submit_request")
+            if isinstance(submit_request_obj, dict):
+                pending_submit_request = BatchSubmitRequest.model_validate(
+                    submit_request_obj
+                )
+            return BatchImportOutcome(
+                tool_calls=tool_calls,
+                pending_submit_request=pending_submit_request,
+            )
+        raise ValueError(f"Unsupported batch import state: {state_obj}")
+
     def _map_model_error_message(self, message: str) -> QuickAgentException | None:
         if "does not support tools" in message:
             return QuickAgentToolsNotSupportedException(
@@ -338,11 +392,15 @@ class AgentExecutor:
                     )
                 )
         try:
+            response_format = typing.cast(
+                    ResponseFormat, batch_request.response_format
+                ) if batch_request.response_format is not None else openai.omit
             response = await client.chat.completions.create(
                 model=batch_request.model.model_name,
                 messages=messages,
                 temperature=batch_request.model.temperature,
                 max_completion_tokens=batch_request.model.max_completion_tokens,
+                response_format=response_format,
                 extra_body=extra_body,
                 tools=tools_payload or openai.omit,
             )
@@ -404,7 +462,7 @@ class AgentExecutor:
         request = batch_request
         while True:
             batch_import = await self._call_batch_handler(request)
-            outcome = self.config.import_outcome(batch_import=batch_import)
+            outcome = self.import_outcome(batch_import=batch_import)
             if outcome.tool_calls is not None:
                 pending = outcome.pending_submit_request
                 if pending is None:

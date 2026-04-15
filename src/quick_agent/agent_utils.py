@@ -48,6 +48,26 @@ def parse_structured_result(
     return schema_cls.model_validate(raw_output)
 
 
+def _as_agent_result(value: object) -> AgentResult:
+    if isinstance(value, BaseModel):
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            result[str(key)] = item
+        return result
+    if isinstance(value, list):
+        items: list[AgentResult] = []
+        index = 0
+        while index < len(value):
+            items.append(_as_agent_result(value[index]))
+            index += 1
+        return items
+    raise ValueError(f"Unsupported completed batch output type: {type(value)}")
+
+
 def extract_finish_reason(response: object | None) -> str | None:
     if response is None:
         return None
@@ -97,11 +117,15 @@ def _normalize_converse(tc: dict[str, object]) -> dict[str, object] | None:
 
 def _normalize_openai(tc: dict[str, object]) -> dict[str, object] | None:
     func = tc.get("function")
-    if not isinstance(func, dict):
-        return None
     tc_id = tc.get("id")
-    name_val = func.get("name")
-    args_val = func.get("arguments")
+    if isinstance(func, dict):
+        name_val = func.get("name")
+        args_val = func.get("arguments")
+    else:
+        name_val = tc.get("name")
+        args_val = tc.get("arguments")
+    if not isinstance(name_val, (str, int, float, bool)) and name_val is not None:
+        return None
     parsed_args: object = args_val
     if isinstance(args_val, str):
         try:
