@@ -40,7 +40,7 @@ from quick_agent.models.batch_request import (
     BatchSubmitRequest,
     BatchToolDefinition,
 )
-from quick_agent.models.chain_step_spec import ChainStepSpec
+from quick_agent.models.chain_step_spec import ChainStepSpec, ToolChoice
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSettings, ModelSpec
@@ -450,6 +450,7 @@ class QuickAgent:
         system_prompt: str | list[str],
         user_prompt: str,
         model_settings: ModelSettings | None,
+        tool_choice: ToolChoice | None = None,
     ) -> BatchSubmitRequest:
         response_format: dict[str, JsonValue] | None = None
         if model_settings is not None:
@@ -477,6 +478,15 @@ class QuickAgent:
         state: dict[str, object] = {}
         for key, value in state_obj.items():
             state[str(key)] = value
+        resolved_tool_choice = self._normalize_tool_choice(tool_choice)
+        tools = self._batch_tools()
+        if resolved_tool_choice is not None:
+            mode = resolved_tool_choice.mode
+            if mode == "none":
+                tools = []
+            elif resolved_tool_choice.allowed_tools is not None:
+                allowed_names = {ref.name for ref in resolved_tool_choice.allowed_tools}
+                tools = [tool for tool in tools if tool.name in allowed_names]
         return BatchSubmitRequest(
             request_id=request_id,
             agent_id=self._executor.config.agent_id,
@@ -498,9 +508,10 @@ class QuickAgent:
                 user_prompt=user_prompt,
             ),
             response_format=response_format,
+            tool_choice=resolved_tool_choice,
             tool_ids=list(self.tool_ids),
-            tools=self._batch_tools() or None,
-            tool_use_enabled=bool(self.tool_ids),
+            tools=tools or None,
+            tool_use_enabled=bool(tools),
             context=BatchAgentContext(
                 input_text=self.run_input.text,
                 state=state,
@@ -530,6 +541,7 @@ class QuickAgent:
                 model_settings = self._executor.context.build_structured_model_settings(
                     schema_cls=schema_cls
                 )
+            tool_choice = self._resolve_tool_choice(step)
             return self.create_batch_request_for_current_step(
                 step_id=step.id,
                 step_kind=step.kind,
@@ -538,6 +550,7 @@ class QuickAgent:
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
                 model_settings=model_settings,
+                tool_choice=tool_choice,
             )
 
         single_schema = self.loaded.spec.output.output_schema
@@ -555,6 +568,7 @@ class QuickAgent:
             system_prompt=self.loaded.system_prompt,
             user_prompt=self._build_single_shot_prompt(),
             model_settings=model_settings,
+            tool_choice=self._resolve_tool_choice(None),
         )
 
     async def import_result(
@@ -1040,6 +1054,20 @@ class QuickAgent:
         if not tool_ids or not self._tools._tool_roots:
             return []
         return load_tool_definitions(self._tools._tool_roots, tool_ids)
+
+    def _resolve_tool_choice(self, step: ChainStepSpec | None) -> ToolChoice | None:
+        if step is not None and step.tool_choice is not None:
+            return step.tool_choice
+        return self.loaded.spec.tool_choice
+
+    def _normalize_tool_choice(
+        self, tool_choice: ToolChoice | None
+    ) -> ToolChoice | None:
+        if tool_choice is None:
+            return None
+        if tool_choice.mode == "any" and self.model_spec.provider != "bedrock":
+            return tool_choice.model_copy(update={"mode": "auto"})
+        return tool_choice
 
     def _toolsets_for_run(self) -> list[AgentToolset]:
         if not self.has_tools():

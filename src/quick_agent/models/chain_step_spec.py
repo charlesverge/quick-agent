@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ToolChoiceToolRef(BaseModel):
@@ -21,6 +21,23 @@ class ToolChoice(BaseModel):
     type: Literal["function"] | None = None
     name: str | None = None
     allowed_tools: list[ToolChoiceToolRef] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_shorthand(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"mode": value}
+        return value
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "ToolChoice":
+        if self.type == "function" and self.name is None:
+            raise ValueError("tool_choice type='function' requires name.")
+        if self.name is not None and self.type != "function":
+            raise ValueError("tool_choice name requires type='function'.")
+        if self.allowed_tools is not None and len(self.allowed_tools) == 0:
+            raise ValueError("tool_choice allowed_tools cannot be empty.")
+        return self
 
 
 class ChainStepSpec(BaseModel):

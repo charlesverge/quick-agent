@@ -159,3 +159,43 @@ agent its own tool root (`examples/agent_memory`) without exposing filesystem to
 
 Built-in tools are wired to adapter classes (`FilesystemToolAdapter`, `ShellToolAdapter`) and do
 not require a `module` import — they are matched by name in `tools_loader.py`.
+
+## Tool Choice
+
+`tool_choice` controls how models call tools and can be configured at:
+
+- agent level (`AgentSpec.tool_choice`)
+- chain step level (`ChainStepSpec.tool_choice`)
+
+If both are set, chain step value takes precedence.
+
+### Modes
+
+- `auto`: default model behavior
+- `required`: model must call at least one tool
+- `none`: disable tool calling for the request
+- `any`: Bedrock-only forcing mode; non-Bedrock providers resolve this to `auto`
+
+`tool_choice` can be provided as shorthand string or object:
+
+```yaml
+tool_choice: "required"
+```
+
+```yaml
+tool_choice:
+  type: "function"
+  name: "filesystem_list_files"
+```
+
+### Allowed Tools
+
+You can constrain the outbound tool list:
+
+```yaml
+tool_choice:
+  allowed_tools:
+    - name: "filesystem_list_files"
+```
+
+This is payload-only enforcement: only listed tools are sent to the model for that request.

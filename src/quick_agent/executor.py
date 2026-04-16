@@ -15,6 +15,7 @@ from openai.types.chat import (
     ChatCompletionFunctionToolParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
+    ChatCompletionToolChoiceOptionParam,
     ChatCompletionToolMessageParam,
     ChatCompletionToolUnionParam,
     ChatCompletionUserMessageParam,
@@ -239,6 +240,7 @@ class AgentExecutor:
             model=submit_request.model,
             messages=messages,
             response_format=submit_request.response_format,
+            tool_choice=submit_request.tool_choice,
             tool_ids=list(self.config.tool_ids),
             tools=submit_request.tools,
             tool_use_enabled=submit_request.tool_use_enabled,
@@ -353,7 +355,7 @@ class AgentExecutor:
                 }
                 messages.append(system_message)
             elif batch_message.role == "assistant":
-                assistant_message: ChatCompletionAssistantMessageParam = {
+                assistant_message: dict[str, object] = {
                     "role": "assistant",
                 }
                 if batch_message.content is not None:
@@ -361,8 +363,10 @@ class AgentExecutor:
                 elif convert_null:
                     assistant_message["content"] = ""
                 if batch_message.tool_calls is not None:
-                    assistant_message["tool_calls"] = batch_message.tool_calls  # type: ignore[typeddict-item]
-                messages.append(assistant_message)
+                    assistant_message["tool_calls"] = batch_message.tool_calls
+                messages.append(
+                    typing.cast(ChatCompletionAssistantMessageParam, assistant_message)
+                )
             elif batch_message.role == "tool":
                 tool_message: ChatCompletionToolMessageParam = {
                     "role": "tool",
@@ -386,17 +390,32 @@ class AgentExecutor:
                 extra_body = {}
             extra_body["response_format"] = batch_request.response_format
         tools_payload: list[ChatCompletionToolUnionParam] = []
-        if self.config.toolset is not None and self.config.tool_ids:
-            for tool in self.config.toolset.tools.values():
-                raw_params = tool.function_schema.json_schema
-                params: dict[str, Any] = dict(raw_params)
-                if takes_agent_state(tool.function):
-                    stripped = strip_agent_state_from_schema(raw_params)
-                    params = dict(stripped)
+        if batch_request.tools is not None:
+            for tool_def in batch_request.tools:
+                input_params: dict[str, object] = {
+                    key: value for key, value in tool_def.input_schema.items()
+                }
                 function_def = FunctionDefinition(
-                    name=tool.name,
-                    description=tool.description or "",
-                    parameters=params,
+                    name=tool_def.name,
+                    description=tool_def.description,
+                    parameters=input_params,
+                )
+                tools_payload.append(
+                    ChatCompletionFunctionToolParam(
+                        {"type": "function", "function": function_def}
+                    )
+                )
+        elif self.config.toolset is not None and self.config.tool_ids:
+            for tool_item in self.config.toolset.tools.values():
+                raw_params = tool_item.function_schema.json_schema
+                tool_params: dict[str, Any] = dict(raw_params)
+                if takes_agent_state(tool_item.function):
+                    stripped = strip_agent_state_from_schema(raw_params)
+                    tool_params = dict(stripped)
+                function_def = FunctionDefinition(
+                    name=tool_item.name,
+                    description=tool_item.description or "",
+                    parameters=tool_params,
                 )
                 tools_payload.append(
                     ChatCompletionFunctionToolParam(
@@ -411,10 +430,16 @@ class AgentExecutor:
             )
             temperature = batch_request.model.temperature
             max_completion_tokens = batch_request.model.max_completion_tokens
+            tool_choice_obj = batch_request.openai_tool_choice()
+            tool_choice = (
+                typing.cast(ChatCompletionToolChoiceOptionParam, tool_choice_obj)
+                if tool_choice_obj is not None
+                else openai.omit
+            )
             model_settings = self.context.model_settings_json
-            if model_settings.max_completion_tokens is not openai.omit:
+            if isinstance(model_settings.max_completion_tokens, int):
                 max_completion_tokens = model_settings.max_completion_tokens
-            if model_settings.temperature is not openai.omit:
+            if isinstance(model_settings.temperature, float):
                 temperature = model_settings.temperature
             response = await client.chat.completions.create(
                 model=batch_request.model.model_name,
@@ -423,6 +448,7 @@ class AgentExecutor:
                 max_completion_tokens=max_completion_tokens,
                 response_format=response_format,
                 tools=tools_payload or openai.omit,
+                tool_choice=tool_choice,
                 extra_body=extra_body,
                 extra_headers=model_settings.extra_headers,
                 timeout=model_settings.timeout,

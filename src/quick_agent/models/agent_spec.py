@@ -25,6 +25,7 @@ class AgentSpec(BaseModel):
     content_processing: ContentProcessingSpec | None = None
     nested_output: Literal["inline", "file"] = "inline"
     safe_dir: str | None = None
+    tool_choice: ToolChoice | None = None
 
     @model_validator(mode="after")
     def validate_output_schema_usage(self) -> "AgentSpec":

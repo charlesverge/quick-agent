@@ -13,6 +13,7 @@ from pydantic import (
     field_serializer,
     model_validator,
 )
+from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.types import AgentResult
 
 
@@ -117,6 +118,7 @@ class BatchSubmitRequest(BaseModel):
     model: BatchModelConfig
     messages: list[BatchMessage]
     response_format: dict[str, JsonValue] | None = None
+    tool_choice: ToolChoice | None = None
     tool_ids: list[str] = Field(default_factory=list)
     tools: list[BatchToolDefinition] | None = None
     tool_use_enabled: bool = False
@@ -193,6 +195,46 @@ class BatchSubmitRequest(BaseModel):
                 f"but bedrock_model_id='{bedrock_model_id}' requires '{required}' format. "
                 f"Update the agent model config to match the deployed Bedrock model."
             )
+
+    def openai_tool_choice(self) -> JsonValue | None:
+        if self.tool_choice is None:
+            return None
+        if self.tool_choice.type == "function" and self.tool_choice.name is not None:
+            return {
+                "type": "function",
+                "function": {"name": self.tool_choice.name},
+            }
+        mode = self.tool_choice.mode
+        if mode == "required":
+            return "required"
+        if mode == "none":
+            return "none"
+        return None
+
+    def bedrock_converse_tool_choice(self) -> dict[str, object] | None:
+        if self.tool_choice is None:
+            return None
+        if self.tool_choice.type == "function" and self.tool_choice.name is not None:
+            return {"tool": {"name": self.tool_choice.name}}
+        mode = self.tool_choice.mode
+        if mode in ("required", "any"):
+            return {"any": {}}
+        return None
+
+    def bedrock_invoke_tool_choice(self) -> dict[str, object] | None:
+        if self.tool_choice is None:
+            return None
+        if self.tool_choice.type == "function" and self.tool_choice.name is not None:
+            return {
+                "type": "function",
+                "function": {"name": self.tool_choice.name},
+            }
+        mode = self.tool_choice.mode
+        if mode == "required":
+            return {"mode": "required"}
+        if mode == "any":
+            return {"mode": "any"}
+        return None
 
     def _build_converse_jsonl_line(self) -> dict[str, object]:
         converse_msgs: list[dict[str, object]] = []
@@ -300,6 +342,13 @@ class BatchSubmitRequest(BaseModel):
                     }
                 )
             model_input["toolConfig"] = {"tools": tool_specs}
+        converse_tool_choice = self.bedrock_converse_tool_choice()
+        if converse_tool_choice is not None:
+            tool_config_obj = model_input.get("toolConfig")
+            if isinstance(tool_config_obj, dict):
+                tool_config_obj["toolChoice"] = converse_tool_choice
+            else:
+                model_input["toolConfig"] = {"toolChoice": converse_tool_choice}
         return {
             "recordId": self.request_id,
             "modelInput": model_input,
@@ -378,6 +427,9 @@ class BatchSubmitRequest(BaseModel):
                     }
                 )
             model_input["tools"] = tool_defs
+        invoke_tool_choice = self.bedrock_invoke_tool_choice()
+        if invoke_tool_choice is not None:
+            model_input["tool_choice"] = invoke_tool_choice
         return {
             "recordId": self.request_id,
             "modelInput": model_input,
