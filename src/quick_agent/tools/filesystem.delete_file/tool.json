@@ -5,12 +5,5 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.delete_file",
     "function": "delete_file"
-  },
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "path": {"type": "string"}
-    },
-    "required": ["path"]
   }
 }

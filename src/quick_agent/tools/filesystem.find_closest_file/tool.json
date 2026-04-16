@@ -5,13 +5,5 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.find_closest_file",
     "function": "find_closest_file"
-  },
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "directory": {"type": "string"},
-      "name": {"type": "string"}
-    },
-    "required": ["directory", "name"]
   }
 }

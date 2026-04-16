@@ -38,13 +38,6 @@ Every tool directory must contain a `tool.json` file:
     "kind": "python",
     "module": "my_package.my_tool",
     "function": "my_tool"
-  },
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "value": {"type": "string"}
-    },
-    "required": ["value"]
   }
 }
 ```
@@ -56,7 +49,10 @@ Every tool directory must contain a `tool.json` file:
 | `impl.kind` | yes | Always `"python"` currently. |
 | `impl.module` | yes | Fully-qualified Python module path. Must be importable at runtime. |
 | `impl.function` | yes | Function name within the module. |
-| `input_schema` | no | JSON Schema for the tool's input parameters. |
+
+The input parameter schema is generated automatically from the Python function's
+type hints at load time. Both interactive and batch modes use the same introspection
+path, so there is no need to declare the schema manually in `tool.json`.
 
 ## Python Implementation
 

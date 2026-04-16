@@ -5,13 +5,5 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.write_text",
     "function": "write_text"
-  },
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "path": {"type": "string"},
-      "content": {"type": "string"}
-    },
-    "required": ["path", "content"]
   }
 }

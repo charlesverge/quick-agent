@@ -5,12 +5,5 @@
     "kind": "python",
     "module": "quick_agent.tools.filesystem.list_files",
     "function": "list_files"
-  },
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "directory": {"type": "string"}
-    },
-    "required": ["directory"]
   }
 }
