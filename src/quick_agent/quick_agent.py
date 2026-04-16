@@ -17,6 +17,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.agent_config import AgentConfig
 from quick_agent.agent_model_utils import resolve_schema
+from quick_agent.agent_processor import AgentProcessor
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.agent_utils import (
@@ -53,12 +54,11 @@ from quick_agent.output import write_output
 from quick_agent.prompting import make_user_prompt
 from quick_agent.recorder import Recorder
 from quick_agent.samplers.simple_ratios import SampleRatios
-from quick_agent.types import AgentResult
+from quick_agent.types import AgentResult, StepOutput
 
 logger = logging.getLogger(__name__)
 
 
-StepOutput: TypeAlias = BaseModel | str | dict[str, Any]
 BatchCallHandler: TypeAlias = Callable[
     [BatchSubmitRequest], Awaitable[BatchImportRequest] | BatchImportRequest
 ]
@@ -84,7 +84,7 @@ class QuickAgent:
         directory_permissions: DirectoryPermissions,
         agent_id: str,
         input_data: InputAdaptor | Path,
-        extra_tools: list[str] | None,
+        extra_tools: list[str] | None = None,
         model: ModelSpec | None = None,
         write_output: bool = True,
         record_http_traffic: bool = False,
@@ -94,6 +94,7 @@ class QuickAgent:
         extra_body: dict[str, JsonValue] | None = None,
         memory: dict[str, Any] | None = None,
         client: openai.AsyncOpenAI | None = None,
+        test_mode: bool = False,
     ) -> None:
         self._registry: AgentRegistry = registry
         self._tools: AgentTools = tools
@@ -159,6 +160,13 @@ class QuickAgent:
                 "response": [self._recorder._record_http_response],
             }
         self.last_run_metrics: dict[str, object] | None = None
+        self._test_mode: bool = test_mode
+
+    @property
+    def processor(self) -> AgentProcessor | None:
+        if not self._test_mode:
+            return None
+        return AgentProcessor(self._executor)
 
     def _build_http_client(self) -> httpx.AsyncClient | None:
         timeout_seconds = self.model_spec.timeout_seconds or 60.0
@@ -584,7 +592,9 @@ class QuickAgent:
         if result is None:
             raise ValueError("Import result did not produce output.")
         if result_outcome.next_request is not None:
-            return BatchImportOutcome(result=result, next_request=result_outcome.next_request)
+            return BatchImportOutcome(
+                result=result, next_request=result_outcome.next_request
+            )
         finalized = self._finalize_output_contract(result)
         if self._write_output_file:
             output_file = self.loaded.spec.output.file

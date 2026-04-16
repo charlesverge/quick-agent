@@ -17,7 +17,7 @@ from quick_agent.models.batch_request import (
     BatchSubmitRequest,
 )
 from quick_agent.quick_agent import QuickAgent
-from quick_agent.types import AgentResult
+from quick_agent.types import AgentResult, StepOutput
 
 
 class Orchestrator:
@@ -108,3 +108,83 @@ class Orchestrator:
             client=client,
         )
         return await agent.import_result(batch_import=batch_import)
+
+    async def batch_execute(
+        self,
+        agent_id: str,
+        input_data: InputAdaptor | Path,
+        extra_tools: list[str] | None = None,
+        record_http_traffic: bool = False,
+        enable_llm_request_logging: bool = False,
+        llm_log_path: Path | str | None = None,
+        client: openai.AsyncOpenAI | None = None,
+        memory: dict[str, object] | None = None,
+    ) -> AgentResult:
+        agent = QuickAgent(
+            registry=self.registry,
+            tools=self.tools,
+            directory_permissions=self.directory_permissions,
+            agent_id=agent_id,
+            input_data=input_data,
+            extra_tools=extra_tools,
+            record_http_traffic=record_http_traffic,
+            enable_llm_request_logging=enable_llm_request_logging,
+            llm_log_path=llm_log_path,
+            client=client,
+            memory=memory,
+            test_mode=True,
+        )
+        processor = agent.processor
+        if processor is None:
+            raise ValueError(
+                "Failed to create agent processor. Check test_mode configuration."
+            )
+        batch_request = agent.batch()
+        import_request = await processor.run_batch(batch_request)
+        outcome = await agent.import_result(batch_import=import_request)
+
+        while outcome.next_request:
+            agent = QuickAgent(
+                registry=self.registry,
+                tools=self.tools,
+                directory_permissions=self.directory_permissions,
+                agent_id=agent_id,
+                input_data=input_data,
+                extra_tools=extra_tools,
+                record_http_traffic=record_http_traffic,
+                enable_llm_request_logging=enable_llm_request_logging,
+                llm_log_path=llm_log_path,
+                client=client,
+                memory=memory,
+                test_mode=True,
+            )
+            processor = agent.processor
+            if processor is None:
+                raise ValueError(
+                    "Failed to create agent processor. Check test_mode configuration."
+                )
+            next_req = outcome.next_request
+            if next_req.context and next_req.context.state:
+                agent_state = next_req.context.state
+                steps_value = agent_state.get("steps")
+                last_output_value = agent_state.get("last_step_output")
+                steps: dict[str, StepOutput] | None = None
+                if isinstance(steps_value, dict):
+                    steps = steps_value  # type: ignore[assignment]
+                last_output: StepOutput | None = None
+                if last_output_value is not None:
+                    last_output = last_output_value  # type: ignore[assignment]
+                agent.state = {
+                    "agent_id": agent_id,
+                    "steps": steps if steps is not None else {},
+                    "last_step_output": last_output,
+                }
+
+            batch_request = agent.batch()
+            import_request = await processor.run_batch(batch_request)
+            outcome = await agent.import_result(batch_import=import_request)
+
+        result = outcome.result
+        if result is None:
+            raise ValueError("Batch execution produced no result.")
+        return result

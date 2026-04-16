@@ -1,0 +1,9 @@
+{
+  "name": "personalize_results_tool",
+  "description": "Return a personalized sentence using memory.first_name and the provided random_word.",
+  "impl": {
+    "kind": "python",
+    "module": "examples.agent_memory.personalize_results_tool",
+    "function": "personalize_results_tool"
+  }
+}

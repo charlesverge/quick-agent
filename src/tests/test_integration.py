@@ -10,13 +10,17 @@ from quick_agent.orchestrator import Orchestrator
 from quick_agent.types import AgentResult
 
 
-async def _run_agent(orchestrator: Orchestrator, agent_id: str, input_path: Path) -> str:
+async def _run_agent(
+    orchestrator: Orchestrator, agent_id: str, input_path: Path
+) -> str:
     result = await orchestrator.run(agent_id, input_path)
     assert isinstance(result, str)
     return result
 
 
-async def _run_agent_any(orchestrator: Orchestrator, agent_id: str, input_path: Path) -> AgentResult:
+async def _run_agent_any(
+    orchestrator: Orchestrator, agent_id: str, input_path: Path
+) -> AgentResult:
     return await orchestrator.run(agent_id, input_path)
 
 
@@ -171,7 +175,9 @@ Use the extracted JSON from the chain state as the ContactInfo object.
     assert "Avery" in output.summary
     assert "Acme" in output.summary
     assert output_path.exists()
-    file_output = ContactSummary.model_validate_json(output_path.read_text(encoding="utf-8"))
+    file_output = ContactSummary.model_validate_json(
+        output_path.read_text(encoding="utf-8")
+    )
     assert file_output.model_dump() == output.model_dump()
 
 
@@ -226,17 +232,23 @@ Extract values from the input and return JSON only for the Output schema.
 
     import anyio
 
-    output = anyio.run(_run_agent_any, orchestrator, "single_shot_structured", input_path)
+    output = anyio.run(
+        _run_agent_any, orchestrator, "single_shot_structured", input_path
+    )
     assert isinstance(output, SingleShotStructuredResult)
     assert output.ticket_id == "TCK-219"
     assert output.priority.lower() == "high"
     assert len(output.action_items) == 2
     assert output_path.exists()
-    file_output = SingleShotStructuredResult.model_validate_json(output_path.read_text(encoding="utf-8"))
+    file_output = SingleShotStructuredResult.model_validate_json(
+        output_path.read_text(encoding="utf-8")
+    )
     assert file_output.model_dump() == output.model_dump()
 
 
-def test_orchestrator_runs_true_single_shot_structured_output_inline_only(tmp_path: Path) -> None:
+def test_orchestrator_runs_true_single_shot_structured_output_inline_only(
+    tmp_path: Path,
+) -> None:
     _require_env("OPENAI_API_KEY")
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
@@ -270,7 +282,9 @@ Extract values from the input and return JSON only for the Output schema.
 - priority: copy exactly from input
 - action_items: include exactly 2 short items from input
 """
-    (agents_dir / "single_shot_structured_inline.md").write_text(agent_md, encoding="utf-8")
+    (agents_dir / "single_shot_structured_inline.md").write_text(
+        agent_md, encoding="utf-8"
+    )
 
     input_path = safe_root / "input.txt"
     input_path.write_text(
@@ -286,7 +300,9 @@ Extract values from the input and return JSON only for the Output schema.
 
     import anyio
 
-    output = anyio.run(_run_agent_any, orchestrator, "single_shot_structured_inline", input_path)
+    output = anyio.run(
+        _run_agent_any, orchestrator, "single_shot_structured_inline", input_path
+    )
     assert isinstance(output, SingleShotStructuredResult)
     assert output.ticket_id == "TCK-220"
     assert output.priority.lower() == "medium"
@@ -422,6 +438,7 @@ Then respond with only the returned text value.
     assert output == "pong"
     assert not child_output.exists()
 
+
 @pytest.mark.anyio
 async def test_orchestrator_allows_nested_output_file(tmp_path: Path) -> None:
     _require_env("OPENAI_API_KEY")
@@ -493,7 +510,10 @@ Then respond with only the returned text value.
 
 
 def test_file_manager_agent_list_find_read_append(tmp_path: Path) -> None:
-    _require_env("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or len(api_key) < 20 or api_key.startswith("sk-"):
+        pytest.skip("Requires valid OPENAI_API_KEY")
+
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)
 
@@ -568,3 +588,219 @@ Follow these steps in order:
     updated = notes_file.read_text(encoding="utf-8")
     assert "Original meeting notes." in updated
     assert "Appended line." in updated
+
+
+def test_batch_execute_single_shot_agent(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    agents_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    input_path = safe_root / "input.txt"
+    input_path.write_text("hello", encoding="utf-8")
+
+    orchestrator = Orchestrator([agents_dir], safe_dir=safe_root)
+
+    import anyio
+
+    result = anyio.run(orchestrator.batch_execute, "single_shot", input_path)
+    assert result == "ok"
+
+
+def test_batch_execute_chain_agent(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    output_file = safe_root / "output.txt"
+    output_file.write_text("", encoding="utf-8")
+
+    agents_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    input_path = safe_root / "input.txt"
+    input_path.write_text(str(output_file), encoding="utf-8")
+
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+
+    import anyio
+
+    result = anyio.run(orchestrator.batch_execute, "chain", input_path)
+    assert isinstance(result, str)
+
+    output_content = output_file.read_text(encoding="utf-8")
+    assert "step1 executed" in output_content
+    assert "step2 executed" in output_content
+
+
+def test_batch_execute_with_tools(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    notes_file = safe_root / "notes.txt"
+    notes_file.write_text("Original notes.\n", encoding="utf-8")
+
+    agents_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    input_path = safe_root / "input.txt"
+    input_path.write_text("go", encoding="utf-8")
+
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+
+    import anyio
+
+    result = anyio.run(orchestrator.batch_execute, "with_tools", input_path)
+    assert isinstance(result, str)
+
+
+@pytest.mark.anyio
+async def test_batch_execute_with_tools_verifies_each_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _require_env("OPENAI_API_KEY")
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    notes_file = safe_root / "notes.txt"
+    notes_file.write_text("Original notes.\n", encoding="utf-8")
+
+    agents_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+
+    input_path = safe_root / "input.txt"
+    input_path.write_text(str(notes_file), encoding="utf-8")
+
+    from quick_agent import QuickAgent
+    from quick_agent.executor import ToolCallResult
+
+    tool_call_log: list[dict[str, object]] = []
+
+    async def mock_execute_tool_calls(
+        self, tool_calls: list[dict[str, object]]
+    ) -> list[ToolCallResult]:
+        tool_call_log.extend(tool_calls)
+        results = []
+        for tc in tool_calls:
+            tc_id = str(tc.get("id", ""))
+            tc_name = str(tc.get("name", ""))
+            results.append(ToolCallResult(id=tc_id, name=tc_name, content="done"))
+        return results
+
+    import quick_agent.executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module.AgentExecutor,
+        "_execute_tool_calls",
+        mock_execute_tool_calls,
+    )
+
+    try:
+        loaded = orchestrator.registry.get("with_tools")
+        extra_tools = list(loaded.spec.tools or [])
+        agent = QuickAgent(
+            registry=orchestrator.registry,
+            tools=orchestrator.tools,
+            directory_permissions=orchestrator.directory_permissions,
+            agent_id="with_tools",
+            input_data=input_path,
+            extra_tools=extra_tools,
+            test_mode=True,
+        )
+
+        processor = agent.processor
+        assert processor
+
+        batch_request = agent.batch()
+        import_request = await processor.run_batch(batch_request)
+        outcome = await agent.import_result(batch_import=import_request)
+
+        while outcome.next_request:
+            agent = QuickAgent(
+                registry=orchestrator.registry,
+                tools=orchestrator.tools,
+                directory_permissions=orchestrator.directory_permissions,
+                agent_id="with_tools",
+                input_data=input_path,
+                extra_tools=extra_tools,
+                test_mode=True,
+            )
+            processor = agent.processor
+            assert processor
+
+            next_req = outcome.next_request
+            if next_req.context and next_req.context.state:
+                ctx_state = next_req.context.state
+                steps_value = ctx_state.get("steps")
+                last_output_value = ctx_state.get("last_step_output")
+                steps: dict[str, object] = {}
+                if isinstance(steps_value, dict):
+                    steps = steps_value
+                agent.state = {
+                    "agent_id": "with_tools",
+                    "steps": steps,  # type: ignore[typeddict-item]
+                    "last_step_output": last_output_value,  # type: ignore[typeddict-item]
+                }
+
+            batch_request = agent.batch()
+            import_request = await processor.run_batch(batch_request)
+            outcome = await agent.import_result(batch_import=import_request)
+
+        assert len(tool_call_log) > 0
+        tool_call_names = [tc.get("name") for tc in tool_call_log]
+        assert "filesystem_append_text" in tool_call_names
+        append_call = next(
+            tc for tc in tool_call_log if tc.get("name") == "filesystem_append_text"
+        )
+        args = append_call.get("arguments", {})
+        assert notes_file.name in str(args)
+        assert "appended by test" in str(args)
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.anyio
+async def test_agent_processor_direct_usage(tmp_path: Path) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+
+    agents_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    input_path = safe_root / "input.txt"
+    input_path.write_text("test", encoding="utf-8")
+
+    orchestrator = Orchestrator([agents_dir], safe_dir=safe_root)
+
+    from quick_agent import QuickAgent
+
+    agent = QuickAgent(
+        registry=orchestrator.registry,
+        tools=orchestrator.tools,
+        directory_permissions=orchestrator.directory_permissions,
+        agent_id="single_shot",
+        input_data=input_path,
+        test_mode=True,
+    )
+
+    processor = agent.processor
+    assert processor
+
+    batch_request = agent.batch()
+    import_request = await processor.run_batch(batch_request)
+    outcome = await agent.import_result(batch_import=import_request)
+
+    assert outcome.result is not None

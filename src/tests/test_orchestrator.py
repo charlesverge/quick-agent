@@ -298,6 +298,7 @@ def _make_quick_agent_for_test(
     memory: dict[str, Any] | None = None,
     enable_llm_request_logging: bool = False,
     llm_log_path: Path | str | None = None,
+    test_mode: bool = False,
 ) -> QuickAgent:
     if loaded is None:
         loaded = _make_loaded_with_chain(
@@ -320,6 +321,7 @@ def _make_quick_agent_for_test(
         memory=memory,
         enable_llm_request_logging=enable_llm_request_logging,
         llm_log_path=llm_log_path,
+        test_mode=test_mode,
     )
     agent._executor.config.batch_call = batch_call
     agent.run_input = run_input
@@ -2944,7 +2946,11 @@ def test_batch_submit_converse_jsonl_includes_tool_config() -> None:
             BatchToolDefinition(
                 name="filesystem_list_files",
                 description="List files",
-                input_schema={"type": "object", "properties": {"directory": {"type": "string"}}, "required": ["directory"]},
+                input_schema={
+                    "type": "object",
+                    "properties": {"directory": {"type": "string"}},
+                    "required": ["directory"],
+                },
             )
         ],
         tool_use_enabled=True,
@@ -3293,7 +3299,13 @@ def test_import_outcome_handles_tool_use_state() -> None:
         request_id="r1",
         payload={
             "state": "tool_use",
-            "tool_calls": [{"id": "call1", "type": "function", "function": {"name": "tool_name", "arguments": {"x": 1}}}],
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "type": "function",
+                    "function": {"name": "tool_name", "arguments": {"x": 1}},
+                }
+            ],
             "submit_request": submit_request.model_dump(mode="json"),
         },
     )
@@ -3376,7 +3388,9 @@ def test_build_next_request_with_tool_results_extends_messages() -> None:
         user_prompt="user prompt",
         model_settings=None,
     )
-    tool_calls: list[dict[str, object]] = [{"id": "call1", "name": "tool_name", "arguments": {"x": 1}}]
+    tool_calls: list[dict[str, object]] = [
+        {"id": "call1", "name": "tool_name", "arguments": {"x": 1}}
+    ]
     executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
     next_req = qa._executor._build_next_request_with_tool_results(
         tool_calls=tool_calls,
@@ -3474,3 +3488,138 @@ def test_batch_submit_request_supports_tools_field() -> None:
     assert req.tool_use_enabled is True
     assert req.tools is not None
     assert req.tools[0].name == "t"
+
+
+@pytest.mark.anyio
+async def test_agent_processor_run_batch_simple_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test run_batch returns completed BatchImportRequest without tools."""
+    from quick_agent.models.batch_request import BatchImportRequest
+    from quick_agent.agent_processor import AgentProcessor
+
+    async def fake_local_batch_call(
+        self, batch_request: BatchSubmitRequest
+    ) -> BatchImportRequest:
+        return BatchImportRequest(
+            request_id=batch_request.request_id,
+            payload={"state": "completed", "output": "hello"},
+        )
+
+    import quick_agent.agent_processor as ap_module
+
+    original = ap_module.AgentProcessor.run_batch
+    monkeypatch.setattr(
+        ap_module.AgentProcessor,
+        "run_batch",
+        fake_local_batch_call,
+    )
+
+    try:
+        agent = _make_quick_agent_for_test()
+        agent._test_mode = True
+        processor = AgentProcessor(agent._executor)
+
+        batch_request = agent.batch()
+        result = await processor.run_batch(batch_request)
+        assert result.payload["state"] == "completed"
+        assert result.payload["output"] == "hello"
+    finally:
+        monkeypatch.setattr(ap_module.AgentProcessor, "run_batch", original)
+
+
+@pytest.mark.anyio
+async def test_agent_processor_run_batch_with_tool_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test run_batch handles tool calls and completes."""
+    from quick_agent.models.batch_request import BatchImportRequest
+    from quick_agent.agent_processor import AgentProcessor
+
+    call_count = 0
+
+    async def fake_run_batch(
+        self, batch_request: BatchSubmitRequest
+    ) -> BatchImportRequest:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return BatchImportRequest(
+                request_id=batch_request.request_id,
+                payload={
+                    "state": "tool_use",
+                    "tool_calls": [{"id": "c1", "name": "test_tool", "arguments": {}}],
+                    "submit_request": batch_request.model_dump(mode="json"),
+                },
+            )
+        return BatchImportRequest(
+            request_id=batch_request.request_id,
+            payload={"state": "completed", "output": "done"},
+        )
+
+    import quick_agent.agent_processor as ap_module
+
+    original = ap_module.AgentProcessor.run_batch
+    monkeypatch.setattr(
+        ap_module.AgentProcessor,
+        "run_batch",
+        fake_run_batch,
+    )
+
+    try:
+        agent = _make_quick_agent_for_test()
+        agent._test_mode = True
+        processor = AgentProcessor(agent._executor)
+
+        batch_request = agent.batch()
+        result = await processor.run_batch(batch_request)
+        assert result is not None
+    finally:
+        monkeypatch.setattr(ap_module.AgentProcessor, "run_batch", original)
+
+
+def test_quick_agent_processor_returns_none_when_test_mode_false() -> None:
+    agent = _make_quick_agent_for_test(test_mode=False)
+    assert agent.processor is None
+
+
+def test_quick_agent_processor_returns_agent_processor_when_test_mode_true() -> None:
+    from quick_agent.agent_processor import AgentProcessor
+
+    agent = _make_quick_agent_for_test(test_mode=True)
+    assert agent.processor is not None
+    assert isinstance(agent.processor, AgentProcessor)
+
+
+@pytest.mark.anyio
+async def test_orchestrator_batch_execute_single_shot_integration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test batch_execute completes single-shot agent with real registry."""
+    from quick_agent.models.batch_request import BatchImportRequest
+    from quick_agent.agent_processor import AgentProcessor
+
+    agent_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
+
+    async def fake_run_batch(self, batch_request):
+        return BatchImportRequest(
+            request_id=batch_request.request_id,
+            payload={"state": "completed", "output": "result"},
+        )
+
+    import quick_agent.agent_processor as ap_module
+
+    original = ap_module.AgentProcessor.run_batch
+    monkeypatch.setattr(ap_module.AgentProcessor, "run_batch", fake_run_batch)
+
+    try:
+        orch = Orchestrator([agent_dir], safe_dir=tmp_path / "safe")
+        run_input = input_adaptors_module.TextInput("hello")
+        result = await orch.batch_execute(
+            agent_id="single_shot",
+            input_data=run_input,
+        )
+        assert result == "result"
+    finally:
+        monkeypatch.setattr(ap_module.AgentProcessor, "run_batch", original)

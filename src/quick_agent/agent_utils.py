@@ -126,6 +126,8 @@ def _normalize_openai(tc: dict[str, object]) -> dict[str, object] | None:
         args_val = tc.get("arguments")
     if not isinstance(name_val, (str, int, float, bool)) and name_val is not None:
         return None
+    if name_val is None:
+        return None
     parsed_args: object = args_val
     if isinstance(args_val, str):
         try:
