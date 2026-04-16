@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Type
 
 import openai
@@ -14,12 +15,9 @@ from openai.types.shared_params.response_format_json_schema import (
     ResponseFormatJSONSchema,
 )
 from pydantic import BaseModel
-from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.settings import ModelSettings
-from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.agent_utils import parse_structured_result
+from quick_agent.json_utils import json_compatible_value
 from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
 )
@@ -69,74 +67,77 @@ def _extract_openai_error_message(error: openai.APIStatusError) -> str:
     return str(error)
 
 
-async def _run_single_shot_text_via_pydantic_ai(
+async def _run_single_shot_text_via_openai_sdk(
     agent: QuickAgent,
     *,
     user_prompt: str,
     instructions: str | None,
     system_prompt: str | list[str],
-    model_settings: ModelSettings | None,
+    model_settings: dict[str, object] | None,
 ) -> str:
+    from quick_agent.executor import _should_convert_null
+
     toolsets = agent._toolsets_for_run()
-    toolset_func = FunctionToolset()
+    tools: list[dict[str, object]] = []
     for ts in toolsets:
         for tool in ts.tools.values():
-            toolset_func.add_function(
-                func=tool.function,
-                name=tool.name,
-                description=tool.description,
-            )
-    # Note: model_name is a string - pydantic_ai Agent accepts string model names
-    model_name = agent._executor.context.model_name
-    runner = Agent(
-        model_name,
+            tools.append(tool.function_schema.to_openai_tool())
+    client = agent._executor.context.build_client(agent._executor.config)
+    messages = _single_shot_messages(
         instructions=instructions,
         system_prompt=system_prompt,
-        toolsets=[toolset_func],
-        output_type=str,
-        model_settings=model_settings,
+        user_prompt=user_prompt,
     )
-    try:
-        result = await runner.run(user_prompt, deps=agent._tool_deps())
-    except ModelHTTPError as error:
-        raise error
-    agent._capture_pydantic_ai_metrics(result)
-    return result.output
-
-
-async def _run_single_shot_structured_via_pydantic_ai(
-    agent: QuickAgent,
-    *,
-    schema_cls: Type[BaseModel],
-    user_prompt: str,
-    instructions: str | None,
-    system_prompt: str | list[str],
-    model_settings: ModelSettings | None,
-) -> BaseModel:
-    toolsets = agent._toolsets_for_run()
-    toolset_func = FunctionToolset()
-    for ts in toolsets:
-        for tool in ts.tools.values():
-            toolset_func.add_function(
-                func=tool.function,
-                name=tool.name,
-                description=tool.description,
-            )
-    model_name = agent._executor.context.model_name
-    runner = Agent(
-        model_name,
-        instructions=instructions,
-        system_prompt=system_prompt,
-        toolsets=[toolset_func],
-        output_type=schema_cls,
-        model_settings=model_settings,
-    )
-    try:
-        result = await runner.run(user_prompt, deps=agent._tool_deps())
-    except ModelHTTPError as error:
-        raise error
-    agent._capture_pydantic_ai_metrics(result)
-    return parse_structured_result(result.output, schema_cls)
+    convert_null = agent.model_spec.convert_null
+    if convert_null is None:
+        convert_null = _should_convert_null(agent.model_spec.base_url)
+    max_iterations = 10
+    for _ in range(max_iterations):
+        extra_body: dict[str, object] | None = None
+        if model_settings is not None:
+            extra_body = model_settings.get("extra_body")
+        response = await client.chat.completions.create(
+            model=agent.model_spec.model_name,
+            messages=messages,
+            tools=tools if tools else None,
+            temperature=agent.model_spec.temperature,
+            max_completion_tokens=agent.model_spec.max_completion_tokens,
+            extra_body=extra_body,
+        )
+        agent._capture_openai_sdk_metrics(response)
+        if not response.choices:
+            raise ValueError("Model returned no completion choices.")
+        message_obj = response.choices[0].message
+        if message_obj.content is None and convert_null:
+            message_dict: ChatCompletionMessageParam = {
+                "role": "assistant",
+                "content": "",
+            }
+        else:
+            message_dict = message_obj.model_dump(exclude_unset=True)
+        messages.append(message_dict)
+        if not message_obj.tool_calls:
+            content = message_obj.content
+            return content if content else ""
+        for tool_call in message_obj.tool_calls:
+            tool_name = tool_call.function.name
+            tool_args_str = tool_call.function.arguments
+            tool_args: dict[str, object] = {}
+            if tool_args_str:
+                tool_args = json.loads(tool_args_str)
+            for ts in toolsets:
+                if tool_name in ts.tools:
+                    result = ts.tools[tool_name].function(**tool_args)
+                    result_json = json_compatible_value(result)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(result_json),
+                        }
+                    )
+                    break
+    raise ValueError("Tool call loop exceeded max iterations")
 
 
 async def _run_single_shot_structured_via_openai_sdk(
@@ -146,7 +147,7 @@ async def _run_single_shot_structured_via_openai_sdk(
     user_prompt: str,
     instructions: str | None,
     system_prompt: str | list[str],
-    model_settings: ModelSettings | None,
+    model_settings: dict[str, object] | None,
 ) -> BaseModel:
     if agent.has_tools():
         raise ValueError(
@@ -227,18 +228,8 @@ async def run_single_shot(
     )
 
     if schema_cls is None:
-        return await _run_single_shot_text_via_pydantic_ai(
+        return await _run_single_shot_text_via_openai_sdk(
             agent,
-            user_prompt=user_prompt,
-            instructions=instructions,
-            system_prompt=system_prompt,
-            model_settings=model_settings,
-        )
-
-    if agent.loaded.spec.single_shot_use_pydantic_ai:
-        return await _run_single_shot_structured_via_pydantic_ai(
-            agent,
-            schema_cls=schema_cls,
             user_prompt=user_prompt,
             instructions=instructions,
             system_prompt=system_prompt,

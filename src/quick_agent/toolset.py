@@ -15,6 +15,19 @@ class FunctionSchema:
 
     json_schema: dict[str, JsonValue]
     takes_ctx: bool
+    name: str = ""
+    description: str = ""
+
+    def to_openai_tool(self) -> dict[str, object]:
+        """Convert to OpenAI tool format."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.json_schema,
+            },
+        }
 
 
 @dataclass
@@ -63,7 +76,12 @@ class AgentToolset:
     ) -> Tool:
         """Add a function as a tool."""
         json_schema = _generate_tool_schema(func)
-        schema = FunctionSchema(json_schema=json_schema, takes_ctx=False)
+        schema = FunctionSchema(
+            json_schema=json_schema,
+            takes_ctx=False,
+            name=name,
+            description=description or "",
+        )
         tool = Tool(
             function=func,
             name=name,

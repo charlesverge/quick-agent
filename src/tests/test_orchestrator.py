@@ -1913,7 +1913,6 @@ async def test_run_single_shot_structured_uses_schema_output_type(
             }
             self.chat = types.SimpleNamespace(completions=FakeCompletions())
 
-    monkeypatch.setattr(single_shot_module, "Agent", ForbiddenAgent)
     monkeypatch.setattr(qa_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     spec = AgentSpec(
