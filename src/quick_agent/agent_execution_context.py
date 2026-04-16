@@ -99,6 +99,16 @@ class AgentExecutionContext:
                 },
             }
             model_settings.extra_body = extra_body
+        elif self.config.model_spec.provider == "openai-compatible":
+            if model_settings is None:
+                model_settings = ModelSettings()
+            else:
+                model_settings = model_settings.model_copy()
+            extra_body_obj = model_settings.extra_body
+            extra_body_dict: dict[str, object] = {"format": "json"}
+            if isinstance(extra_body_obj, dict):
+                extra_body_dict.update(extra_body_obj)
+            model_settings.extra_body = extra_body_dict
         return model_settings
 
     def _apply_strict_schema(self, schema: dict[str, JsonValue]) -> None:
@@ -182,11 +192,8 @@ class AgentExecutionContext:
 
         if model_spec.provider == "openai-compatible":
             if model_spec.base_url != "https://api.openai.com/v1":
-                extra_body_obj: dict[str, object] = {"format": "json"}
                 if extra_body:
-                    extra_body_obj.update(extra_body)
-                if extra_body_obj:
-                    settings.extra_body = extra_body_obj
+                    settings.extra_body = dict(extra_body)
             elif extra_body:
                 extra_body_dict = dict(extra_body)
                 options = extra_body_dict.get("options")

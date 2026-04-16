@@ -31,7 +31,7 @@ class ModelSettings(BaseModel):
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, dict):
-            return self.model_dump(exclude_defaults=True) == other
+            raise NotImplementedError("Comparison to dict is not supported for ModelSettings")
         if isinstance(other, ModelSettings):
             return self.model_dump(exclude_defaults=True) == other.model_dump(
                 exclude_defaults=True

@@ -499,7 +499,7 @@ def test_build_model_settings_openai_compatible() -> None:
         qa._executor.config, spec
     )
 
-    assert settings == {"extra_body": {"format": "json"}}
+    assert settings.extra_body is openai.omit
 
 
 def test_build_model_settings_openai_endpoint_skips_format() -> None:
@@ -514,7 +514,10 @@ def test_build_model_settings_openai_endpoint_skips_format() -> None:
         qa._executor.config, spec
     )
 
-    assert settings is None
+    assert settings is not None
+    extra_body = settings.extra_body
+    assert isinstance(extra_body, dict)
+    assert "format" not in extra_body
 
 
 def test_build_model_settings_other_provider() -> None:
@@ -607,6 +610,21 @@ def test_build_structured_model_settings_non_openai_passthrough() -> None:
     result = qa._executor.context.build_structured_model_settings(schema_cls=schema)
 
     assert result == settings
+
+
+def test_build_structured_model_settings_non_openai_compatible_adds_format() -> None:
+    qa = _make_quick_agent_for_test()
+    schema = ExampleSchema
+    qa._executor.config.model_spec = ModelSpec(
+        base_url="http://localhost",
+        model_name="m",
+        provider="openai-compatible",
+    )
+    qa._executor.context.model_settings_json = ModelSettings()
+
+    result = qa._executor.context.build_structured_model_settings(schema_cls=schema)
+
+    assert result.extra_body == {"format": "json"}
 
 
 def test_build_structured_model_settings_openai_injects_schema() -> None:
@@ -842,7 +860,9 @@ async def test_run_step_structured_parses_json_with_fallback(
         qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
         qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
-        qa._executor.context.model_settings_json = ModelSettings(extra_body={"format": "json"})
+        qa._executor.context.model_settings_json = ModelSettings(
+            extra_body={"format": "json"}
+        )
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
         qa.run_input = run_input
