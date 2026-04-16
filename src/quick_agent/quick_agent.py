@@ -13,7 +13,7 @@ from httpx._config import DEFAULT_LIMITS
 import openai
 from pydantic import BaseModel, JsonValue
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.toolsets import FunctionToolset
+from quick_agent.toolset import AgentToolset
 
 from quick_agent.agent_config import AgentConfig
 from quick_agent.agent_model_utils import resolve_schema
@@ -118,7 +118,7 @@ class QuickAgent:
         self.run_input: RunInput = input_adaptor.load()
 
         self.tool_ids: list[str] = self._build_tool_ids()
-        self.toolset: FunctionToolset[Any] | None = self._build_toolset()
+        self.toolset: AgentToolset | None = self._build_toolset()
         self.model_spec: ModelSpec = model or self.loaded.spec.model
         self.extra_headers = self._merge_extra_headers()
         self._record_http_traffic: bool = record_http_traffic
@@ -1036,7 +1036,7 @@ class QuickAgent:
             dict.fromkeys((self.loaded.spec.tools or []) + (self._extra_tools or []))
         )
 
-    def _build_toolset(self) -> FunctionToolset[Any] | None:
+    def _build_toolset(self) -> AgentToolset | None:
         if not self.has_tools():
             return None
         return self._tools.build_toolset(self.tool_ids, self.permissions)
@@ -1047,7 +1047,7 @@ class QuickAgent:
             return []
         return load_tool_definitions(self._tools._tool_roots, tool_ids)
 
-    def _toolsets_for_run(self) -> list[FunctionToolset[Any]]:
+    def _toolsets_for_run(self) -> list[AgentToolset]:
         if not self.has_tools():
             return []
         if self.toolset is None:

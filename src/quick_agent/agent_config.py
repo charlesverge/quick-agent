@@ -6,7 +6,7 @@ from typing import Any, Callable
 import httpx
 import openai
 from pydantic import JsonValue
-from pydantic_ai.toolsets import FunctionToolset
+from quick_agent.toolset import AgentToolset
 
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
 from quick_agent.models.model_spec import ModelSpec
@@ -17,7 +17,7 @@ from quick_agent.recorder import Recorder
 @dataclass
 class AgentConfig:
     agent_id: str
-    toolset: FunctionToolset[Any] | None
+    toolset: AgentToolset | None
     tool_ids: list[str]
     memory: dict[str, Any]
     model_spec: ModelSpec

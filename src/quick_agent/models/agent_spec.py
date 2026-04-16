@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from quick_agent.models.chain_step_spec import ChainStepSpec
+from quick_agent.models.chain_step_spec import ChainStepSpec, ToolChoice
 from quick_agent.models.content_processing_spec import ContentProcessingSpec
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.model_spec import ModelSpec

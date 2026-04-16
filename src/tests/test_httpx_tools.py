@@ -6,7 +6,6 @@ import httpx
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent import agent_execution_context as agent_execution_context_module
 from quick_agent import quick_agent as qa_module
@@ -17,6 +16,7 @@ from quick_agent.input_adaptors import TextInput
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.quick_agent import QuickAgent
+from quick_agent.toolset import AgentToolset
 
 DEFAULT_MODEL_NAME = "gpt-4.1-mini"
 
@@ -60,9 +60,13 @@ class BuildModelStub:
     ) -> OpenAIChatModel:
         return self.model
 
+
 ok_content = json.dumps({"result": "ok"})
 
-def _chat_completion_response(model_name: str, content: str = ok_content) -> dict[str, Any]:
+
+def _chat_completion_response(
+    model_name: str, content: str = ok_content
+) -> dict[str, Any]:
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -183,7 +187,7 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
 
         registry = StaticRegistry(loaded)
         tools = AgentTools([])
-        toolset = FunctionToolset[Any]()
+        toolset = AgentToolset()
         toolset.add_function(
             func=dummy_tool, name="dummy_tool", description="dummy tool"
         )
@@ -360,9 +364,7 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_stub
-    )
+    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -433,9 +435,7 @@ async def test_connection_close_header_included_in_httpx_request(
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_stub
-    )
+    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -505,9 +505,7 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_stub
-    )
+    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -562,7 +560,9 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
 async def test_extra_headers_merge_model_spec_and_param(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    response_json = _chat_completion_response(DEFAULT_MODEL_NAME, json.dumps({"result": "ok"}))
+    response_json = _chat_completion_response(
+        DEFAULT_MODEL_NAME, json.dumps({"result": "ok"})
+    )
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
 
@@ -578,9 +578,7 @@ async def test_extra_headers_merge_model_spec_and_param(
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_stub
-    )
+    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)

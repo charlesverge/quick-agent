@@ -2,9 +2,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic_ai.tools import Tool
-from pydantic_ai.toolsets import FunctionToolset
 from quick_agent.directory_permissions import DirectoryPermissions
+from quick_agent.toolset import AgentToolset, Tool
 from quick_agent.tools.filesystem.adapter import FilesystemToolAdapter
 from quick_agent.tools.shell.adapter import ShellToolAdapter
 from quick_agent.tools_loader import (
@@ -294,19 +293,22 @@ def test_shell_run_denies_cwd_outside_root(tmp_path: Path) -> None:
 # --- load_tools dispatch cycle ---
 
 
-class _CapturingToolset(FunctionToolset[Any]):
-    """FunctionToolset subclass that records what is registered."""
+class _CapturingToolset(AgentToolset):
+    """AgentToolset subclass that records what is registered."""
 
     def __init__(self) -> None:
         super().__init__()
         self.calls: list[tuple[Any, str]] = []
 
-    def add_function(self, *args: Any, **kwargs: Any) -> Tool[Any]:
-        func = args[0] if args else kwargs.get("func")
-        name = kwargs.get("name")
+    def add_function(
+        self,
+        func: Any,
+        name: str,
+        description: str | None = None,
+    ) -> Tool:
         if func is not None and name is not None:
             self.calls.append((func, name))
-        return super().add_function(*args, **kwargs)
+        return super().add_function(func, name, description)
 
 
 def test_load_tools_dispatches_append_text_to_adapter(
@@ -318,7 +320,7 @@ def test_load_tools_dispatches_append_text_to_adapter(
     capturing = _CapturingToolset()
     import quick_agent.tools_loader as tl_module
 
-    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+    monkeypatch.setattr(tl_module, "AgentToolset", lambda: capturing)
 
     load_tools([_system_tools_dir()], ["filesystem_append_text"], permissions)
 
@@ -338,7 +340,7 @@ def test_load_tools_dispatches_list_files_to_adapter(
     capturing = _CapturingToolset()
     import quick_agent.tools_loader as tl_module
 
-    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+    monkeypatch.setattr(tl_module, "AgentToolset", lambda: capturing)
 
     load_tools([_system_tools_dir()], ["filesystem_list_files"], permissions)
 
@@ -358,7 +360,7 @@ def test_load_tools_dispatches_delete_file_to_adapter(
     capturing = _CapturingToolset()
     import quick_agent.tools_loader as tl_module
 
-    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+    monkeypatch.setattr(tl_module, "AgentToolset", lambda: capturing)
 
     load_tools([_system_tools_dir()], ["filesystem_delete_file"], permissions)
 
@@ -378,7 +380,7 @@ def test_load_tools_dispatches_find_closest_file_to_adapter(
     capturing = _CapturingToolset()
     import quick_agent.tools_loader as tl_module
 
-    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+    monkeypatch.setattr(tl_module, "AgentToolset", lambda: capturing)
 
     load_tools([_system_tools_dir()], ["filesystem_find_closest_file"], permissions)
 
@@ -398,7 +400,7 @@ def test_load_tools_dispatches_shell_run_to_adapter(
     capturing = _CapturingToolset()
     import quick_agent.tools_loader as tl_module
 
-    monkeypatch.setattr(tl_module, "FunctionToolset", lambda: capturing)
+    monkeypatch.setattr(tl_module, "AgentToolset", lambda: capturing)
 
     load_tools([_system_tools_dir()], ["shell_run"], permissions)
 

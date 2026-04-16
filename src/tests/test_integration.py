@@ -39,7 +39,7 @@ def _require_ollama(base_url: str) -> None:
             response = client.get(health_url)
             response.raise_for_status()
     except Exception:
-        pytest.skip(f"Ollama is not reachable at {base_url}")
+        raise RuntimeError(f"Unable to connect to Ollama at {base_url}. Ensure Ollama is running and the base URL is correct.")
 
 
 class ContactInfo(BaseModel):
@@ -510,9 +510,7 @@ Then respond with only the returned text value.
 
 
 def test_file_manager_agent_list_find_read_append(tmp_path: Path) -> None:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key or len(api_key) < 20 or api_key.startswith("sk-"):
-        pytest.skip("Requires valid OPENAI_API_KEY")
+    _require_env("OPENAI_API_KEY")
 
     safe_root = tmp_path / "safe"
     safe_root.mkdir(parents=True, exist_ok=True)

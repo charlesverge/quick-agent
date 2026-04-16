@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from quick_agent.types import AgentResult
-from pydantic_ai.toolsets import FunctionToolset
+from quick_agent.toolset import AgentToolset
 
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.directory_permissions import DirectoryPermissions
@@ -17,16 +17,18 @@ class AgentTools:
     def __init__(self, tool_roots: list[Path]) -> None:
         self._tool_roots: list[Path] = tool_roots
 
-    def build_toolset(self, tool_ids: list[str], permissions: DirectoryPermissions) -> FunctionToolset[Any]:
+    def build_toolset(
+        self, tool_ids: list[str], permissions: DirectoryPermissions
+    ) -> AgentToolset:
         tool_ids_for_disk = [tool_id for tool_id in tool_ids if tool_id != "agent_call"]
         if tool_ids_for_disk:
             return load_tools(self._tool_roots, tool_ids_for_disk, permissions)
-        return FunctionToolset()
+        return AgentToolset()
 
     def maybe_inject_agent_call(
         self,
         tool_ids: list[str],
-        toolset: FunctionToolset[Any],
+        toolset: AgentToolset,
         run_input_source_path: str,
         call_agent: Callable[[str, InputAdaptor | Path], Awaitable[AgentResult]],
     ) -> None:

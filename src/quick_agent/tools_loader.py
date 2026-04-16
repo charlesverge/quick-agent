@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import JsonValue
-from pydantic_ai.toolsets import FunctionToolset
+from quick_agent.toolset import AgentToolset
 
 from quick_agent.agent_tool_schema import (
     strip_agent_state_from_schema,
@@ -85,7 +85,7 @@ def load_tool_definitions(
             func = adapter_method
         else:
             func = import_symbol(f"{tool_obj.impl.module}:{tool_obj.impl.function}")
-        toolset = FunctionToolset()
+        toolset = AgentToolset()
         toolset.add_function(
             func=func, name=tool_name, description=tool_obj.description
         )
@@ -122,11 +122,11 @@ def load_tools(
     tool_roots: list[Path],
     tool_names: list[str],
     permissions: DirectoryPermissions,
-) -> FunctionToolset[Any]:
+) -> AgentToolset:
     """
-    Minimal approach: load local python functions and register them into a FunctionToolset.
+    Minimal approach: load local python functions and register them into an AgentToolset.
     """
-    toolset = FunctionToolset()
+    toolset = AgentToolset()
 
     tool_index = _discover_tool_index(tool_roots)
     fs_adapter = FilesystemToolAdapter(permissions)

@@ -18,6 +18,7 @@ from quick_agent import agent_model_utils as agent_model_utils_module
 from quick_agent import agent_tools as tools_module
 from quick_agent import input_adaptors as input_adaptors_module
 from quick_agent import quick_agent as qa_module
+from quick_agent.toolset import AgentToolset, Tool as AgentTool
 from quick_agent import single_shot as single_shot_module
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.agent_model_utils import build_model
@@ -85,18 +86,20 @@ class DummyOpenAIModel:
         self.provider = DummyOpenAIProvider(base_url)
 
 
-class RecordingToolset(FunctionToolset[Any]):
+class RecordingToolset(AgentToolset):
     def __init__(self) -> None:
         super().__init__()
         self.add_calls: list[tuple[Any, str, str]] = []
 
-    def add_function(self, *args: Any, **kwargs: Any) -> Tool[Any]:
-        func = kwargs.get("func")
-        name = kwargs.get("name")
-        description = kwargs.get("description")
+    def add_function(
+        self,
+        func: Any,
+        name: str,
+        description: str | None = None,
+    ) -> AgentTool:
         if func is not None and name is not None and description is not None:
             self.add_calls.append((func, name, description))
-        return super().add_function(*args, **kwargs)
+        return super().add_function(func, name, description)
 
 
 class FakeAgentResult:
@@ -293,7 +296,7 @@ def _make_quick_agent_for_test(
     *,
     loaded: LoadedAgentFile | None = None,
     run_input: RunInput | None = None,
-    toolset: FunctionToolset[Any] | None = None,
+    toolset: AgentToolset | None = None,
     batch_call: Callable[..., object] | None = None,
     memory: dict[str, Any] | None = None,
     enable_llm_request_logging: bool = False,
@@ -417,7 +420,7 @@ def test_build_toolset_returns_empty_for_agent_call_only(
     tools = AgentTools([tmp_path])
     toolset = tools.build_toolset(["agent_call"], _permissions(tmp_path))
 
-    assert isinstance(toolset, FunctionToolset)
+    assert isinstance(toolset, AgentToolset)
     assert recorder.calls == []
 
 
