@@ -176,6 +176,110 @@ def _validate_output_rows(
         raise ValueError("output recordIds do not match input recordIds")
 
 
+def _has_tool_use_anthropic(model_output: dict[str, object]) -> bool:
+    content = model_output.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("type") == "tool_use" for item in content
+    )
+
+
+def _has_tool_use_converse(model_output: dict[str, object]) -> bool:
+    content = model_output.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(item, dict) and "toolUse" in item for item in content)
+
+
+def _has_tool_use_openai(model_output: dict[str, object]) -> bool:
+    choices = model_output.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return True
+    return False
+
+
+def _has_tool_use(model_output: dict[str, object]) -> bool:
+    return (
+        _has_tool_use_anthropic(model_output)
+        or _has_tool_use_converse(model_output)
+        or _has_tool_use_openai(model_output)
+    )
+
+
+def _validate_tool_choice_tool_use(
+    *,
+    submit_rows: list[dict[str, object]],
+    output_rows: list[dict[str, object]],
+    settings: HarnessSettings,
+) -> None:
+    submit_index: dict[str, dict[str, object]] = {}
+    for submit_entry in submit_rows:
+        request_id_obj = submit_entry.get("request_id")
+        if isinstance(request_id_obj, str):
+            submit_index[request_id_obj] = submit_entry
+    required_seen = False
+    any_seen = False
+    none_seen = False
+    for output_row in output_rows:
+        record_id_obj = output_row.get("recordId")
+        if not isinstance(record_id_obj, str):
+            continue
+        submit_row = submit_index.get(record_id_obj)
+        if not isinstance(submit_row, dict):
+            continue
+        agent_id_obj = submit_row.get("agent_id")
+        step_id_obj = submit_row.get("step_id")
+        if (
+            not isinstance(agent_id_obj, str)
+            or not isinstance(step_id_obj, str)
+            or agent_id_obj != settings.tool_choice_agent_id
+        ):
+            continue
+        model_output_obj = output_row.get("modelOutput")
+        if not isinstance(model_output_obj, dict):
+            continue
+        has_tool_use = _has_tool_use(model_output_obj)
+        if step_id_obj == settings.tool_choice_required_step_id:
+            required_seen = True
+            if not has_tool_use:
+                raise ValueError(
+                    f"tool-choice validation failed for step_id={step_id_obj}: expected tool call"
+                )
+        if step_id_obj == settings.tool_choice_any_step_id:
+            any_seen = True
+            if not has_tool_use:
+                raise ValueError(
+                    f"tool-choice validation failed for step_id={step_id_obj}: expected tool call"
+                )
+        if step_id_obj == settings.tool_choice_none_step_id:
+            none_seen = True
+            if has_tool_use:
+                raise ValueError(
+                    f"tool-choice validation failed for step_id={step_id_obj}: expected no tool call"
+                )
+    if not required_seen:
+        raise ValueError(
+            f"tool-choice validation failed: missing output row for step_id={settings.tool_choice_required_step_id}"
+        )
+    if not any_seen:
+        raise ValueError(
+            f"tool-choice validation failed: missing output row for step_id={settings.tool_choice_any_step_id}"
+        )
+    if not none_seen:
+        raise ValueError(
+            f"tool-choice validation failed: missing output row for step_id={settings.tool_choice_none_step_id}"
+        )
+
+
 def _validate_submit_rows(
     rows: list[dict[str, object]], expected_count: int, settings: HarnessSettings
 ) -> tuple[set[str], str]:
@@ -216,6 +320,15 @@ def _validate_submit_rows(
                 raise ValueError(
                     f"{context}: expected submit row index={settings.file_manager_index} tool_use_enabled=True"
                 )
+        if index == settings.tool_choice_index:
+            if agent_id != settings.tool_choice_agent_id:
+                raise ValueError(
+                    f"{context}: expected submit row index={settings.tool_choice_index} agent_id={settings.tool_choice_agent_id}, got {agent_id}"
+                )
+            if step_id != settings.tool_choice_required_step_id:
+                raise ValueError(
+                    f"{context}: expected submit row index={settings.tool_choice_index} step_id={settings.tool_choice_required_step_id}, got {step_id}"
+                )
         if agent_id == settings.file_manager_agent_id and index >= expected_count:
             file_manager_follow_up_found = True
         if (
@@ -254,7 +367,10 @@ def _validate_submit_rows(
 
 
 def _validate_outcome_rows(
-    rows: list[dict[str, object]], expected_count: int, chain_index: int, settings: HarnessSettings
+    rows: list[dict[str, object]],
+    expected_count: int,
+    chain_index: int,
+    settings: HarnessSettings,
 ) -> OutcomeRowsResult:
     if len(rows) != expected_count:
         raise ValueError(
@@ -271,11 +387,15 @@ def _validate_outcome_rows(
             if not has_result:
                 raise ValueError(f"{context}: missing result")
             if has_next:
-                raise ValueError(f"{context}: next_request is not expected in this harness flow")
+                raise ValueError(
+                    f"{context}: next_request is not expected in this harness flow"
+                )
             if index == settings.file_manager_index:
                 file_result = row["result"]
                 if not isinstance(file_result, str) or not file_result.strip():
-                    raise ValueError(f"{context}: file manager result must be a non-empty string")
+                    raise ValueError(
+                        f"{context}: file manager result must be a non-empty string"
+                    )
                 lower = file_result.lower()
                 if settings.file_manager_directory not in lower:
                     raise ValueError(
@@ -291,16 +411,22 @@ def _validate_outcome_rows(
             if index == settings.agent_memory_index:
                 memory_result = row["result"]
                 if not isinstance(memory_result, str) or not memory_result.strip():
-                    raise ValueError(f"{context}: agent memory result must be a non-empty string")
-                expected_prefix = f"{settings.agent_memory_first_name} your random word is "
+                    raise ValueError(
+                        f"{context}: agent memory result must be a non-empty string"
+                    )
+                expected_prefix = (
+                    f"{settings.agent_memory_first_name} your random word is "
+                )
                 if not memory_result.lower().startswith(expected_prefix.lower()):
                     raise ValueError(
                         f"{context}: agent memory result does not match expected pattern "
                         f"{expected_prefix!r}, got {memory_result!r}"
                     )
-                word = memory_result[len(expected_prefix):].strip()
+                word = memory_result[len(expected_prefix) :].strip()
                 if not word:
-                    raise ValueError(f"{context}: agent memory result missing random word after prefix")
+                    raise ValueError(
+                        f"{context}: agent memory result missing random word after prefix"
+                    )
                 result.warnings_by_index[index] = []
                 index += 1
                 continue
@@ -310,7 +436,9 @@ def _validate_outcome_rows(
             result.keywords_by_index[index] = tech_keywords
             if index == chain_index:
                 if not tech_keywords.computer_languages:
-                    raise ValueError(f"{context}: chain final output missing computer_languages values")
+                    raise ValueError(
+                        f"{context}: chain final output missing computer_languages values"
+                    )
         except ValueError as row_error:
             result.errors_by_index[index] = str(row_error)
         index += 1
@@ -324,8 +452,14 @@ def _validate_file_manager_file(settings: HarnessSettings) -> None:
     directory = input_data.get("directory")
     search_name = input_data.get("search_name")
     append_text = input_data.get("append_text")
-    if not isinstance(directory, str) or not isinstance(search_name, str) or not isinstance(append_text, str):
-        raise ValueError("file_manager_input missing required string fields: directory, search_name, append_text")
+    if (
+        not isinstance(directory, str)
+        or not isinstance(search_name, str)
+        or not isinstance(append_text, str)
+    ):
+        raise ValueError(
+            "file_manager_input missing required string fields: directory, search_name, append_text"
+        )
     file_path = settings.safe_dir / directory / search_name
     if not file_path.exists():
         raise ValueError(f"file manager target file not found: {file_path}")
@@ -376,83 +510,88 @@ def verify(
     submit_ids: set[str] = set()
 
     try:
-      input_ids = _validate_input_rows(input_rows, expected_count)
+        input_ids = _validate_input_rows(input_rows, expected_count)
     except ValueError as error:
-      input_errors.append(str(error))
+        input_errors.append(str(error))
 
     try:
-      submit_ids, _ = _validate_submit_rows(submit_rows, expected_count, settings)
+        submit_ids, _ = _validate_submit_rows(submit_rows, expected_count, settings)
     except ValueError as error:
-      submit_errors.append(str(error))
+        submit_errors.append(str(error))
 
     try:
-      _validate_output_rows(output_rows, submit_ids)
-      if len(output_rows) <= len(input_rows):
-        raise ValueError(
-          "output rows must include at least one additional row for chain follow-up execution"
+        _validate_output_rows(output_rows, submit_ids)
+        _validate_tool_choice_tool_use(
+            submit_rows=submit_rows,
+            output_rows=output_rows,
+            settings=settings,
         )
+        if len(output_rows) <= len(input_rows):
+            raise ValueError(
+                "output rows must include at least one additional row for chain follow-up execution"
+            )
     except ValueError as error:
-      output_errors.append(str(error))
+        output_errors.append(str(error))
 
     try:
-      outcome_rows_result = _validate_outcome_rows(
-        outcome_rows, expected_count, chain_index=1, settings=settings
-      )
-      for warnings_list in outcome_rows_result.warnings_by_index.values():
-        outcome_warnings.extend(warnings_list)
-      outcome_keywords = outcome_rows_result.keywords_by_index
-      warnings_by_index = outcome_rows_result.warnings_by_index
-      if outcome_rows_result.errors_by_index:
-        for idx, msg in outcome_rows_result.errors_by_index.items():
-          outcome_errors.append(msg)
-        outcome_errors.append(
-          f"outcome row success rate: {outcome_rows_result.success_count}/{outcome_rows_result.total_count} ({outcome_rows_result.success_pct}%)"
+        outcome_rows_result = _validate_outcome_rows(
+            outcome_rows, expected_count, chain_index=1, settings=settings
         )
+        for warnings_list in outcome_rows_result.warnings_by_index.values():
+            outcome_warnings.extend(warnings_list)
+        outcome_keywords = outcome_rows_result.keywords_by_index
+        warnings_by_index = outcome_rows_result.warnings_by_index
+        if outcome_rows_result.errors_by_index:
+            for idx, msg in outcome_rows_result.errors_by_index.items():
+                outcome_errors.append(msg)
+            outcome_errors.append(
+                f"outcome row success rate: {outcome_rows_result.success_count}/{outcome_rows_result.total_count} ({outcome_rows_result.success_pct}%)"
+            )
     except ValueError as error:
-      outcome_errors.append(str(error))
+        outcome_errors.append(str(error))
 
     input_stage = StageResult(
-      stage_name="input",
-      file_path=str(input_jsonl),
-      row_count=len(input_rows),
-      errors=input_errors,
+        stage_name="input",
+        file_path=str(input_jsonl),
+        row_count=len(input_rows),
+        errors=input_errors,
     )
 
     submit_stage = StageResult(
-      stage_name="submit_requests",
-      file_path=str(submit_requests_jsonl),
-      row_count=len(submit_rows),
-      errors=submit_errors,
+        stage_name="submit_requests",
+        file_path=str(submit_requests_jsonl),
+        row_count=len(submit_rows),
+        errors=submit_errors,
     )
 
     output_stage = StageResult(
-      stage_name="output",
-      file_path=str(output_jsonl),
-      row_count=len(output_rows),
-      errors=output_errors,
+        stage_name="output",
+        file_path=str(output_jsonl),
+        row_count=len(output_rows),
+        errors=output_errors,
     )
 
     outcome_stage = StageResult(
-      stage_name="outcomes",
-      file_path=str(outcomes_jsonl),
-      row_count=len(outcome_rows),
-      errors=outcome_errors,
-      warnings=outcome_warnings,
+        stage_name="outcomes",
+        file_path=str(outcomes_jsonl),
+        row_count=len(outcome_rows),
+        errors=outcome_errors,
+        warnings=outcome_warnings,
     )
 
     overall_passed = (
-      len(input_errors) == 0
-      and len(submit_errors) == 0
-      and len(output_errors) == 0
-      and len(outcome_errors) == 0
+        len(input_errors) == 0
+        and len(submit_errors) == 0
+        and len(output_errors) == 0
+        and len(outcome_errors) == 0
     )
 
     result = VerificationResult(
-      passed=overall_passed,
-      input_stage=input_stage,
-      submit_stage=submit_stage,
-      output_stage=output_stage,
-      outcome_stage=outcome_stage,
+        passed=overall_passed,
+        input_stage=input_stage,
+        submit_stage=submit_stage,
+        output_stage=output_stage,
+        outcome_stage=outcome_stage,
     )
     result.outcome_keywords = outcome_keywords
     result.outcome_warnings_by_index = warnings_by_index
@@ -460,48 +599,48 @@ def verify(
 
 
 def _format_results(result: VerificationResult) -> str:
-  """Format verification results for console output."""
-  lines: list[str] = []
-  lines.append("")
-  lines.append("=" * 70)
-  lines.append("Bedrock Batch Test Harness Verification Results")
-  lines.append("=" * 70)
-  lines.append("")
-
-  status_icon = "✓" if result.passed else "✗"
-  status_text = "PASSED" if result.passed else "FAILED"
-  lines.append(f"Status: {status_icon} {status_text}")
-  lines.append("")
-
-  lines.append("Validation Summary:")
-  for stage in result.all_stages:
-    stage_icon = "✓" if stage.passed else "✗"
-    stage_status = "PASS" if stage.passed else "FAIL"
-    warning_text = " ⚠" if stage.has_warnings else ""
-    lines.append(
-      f"  {stage.stage_name:20} {stage_icon} {stage_status:5} ({stage.row_count} rows){warning_text}"
-    )
-
-  if result.total_errors > 0:
+    """Format verification results for console output."""
+    lines: list[str] = []
     lines.append("")
-    lines.append(f"Errors ({result.total_errors}):")
-    for stage in result.all_stages:
-      for error in stage.errors:
-        lines.append(f"  [{stage.stage_name}] {error}")
-    for error in result.errors:
-      lines.append(f"  [harness] {error}")
-
-  if result.total_warnings > 0:
+    lines.append("=" * 70)
+    lines.append("Bedrock Batch Test Harness Verification Results")
+    lines.append("=" * 70)
     lines.append("")
-    lines.append(f"Warnings ({result.total_warnings}):")
-    for stage in result.all_stages:
-      for warning in stage.warnings:
-        lines.append(f"  [{stage.stage_name}] {warning}")
-    for warning in result.warnings:
-      lines.append(f"  [harness] {warning}")
 
-  lines.append("")
-  return "\n".join(lines)
+    status_icon = "✓" if result.passed else "✗"
+    status_text = "PASSED" if result.passed else "FAILED"
+    lines.append(f"Status: {status_icon} {status_text}")
+    lines.append("")
+
+    lines.append("Validation Summary:")
+    for stage in result.all_stages:
+        stage_icon = "✓" if stage.passed else "✗"
+        stage_status = "PASS" if stage.passed else "FAIL"
+        warning_text = " ⚠" if stage.has_warnings else ""
+        lines.append(
+            f"  {stage.stage_name:20} {stage_icon} {stage_status:5} ({stage.row_count} rows){warning_text}"
+        )
+
+    if result.total_errors > 0:
+        lines.append("")
+        lines.append(f"Errors ({result.total_errors}):")
+        for stage in result.all_stages:
+            for error in stage.errors:
+                lines.append(f"  [{stage.stage_name}] {error}")
+        for error in result.errors:
+            lines.append(f"  [harness] {error}")
+
+    if result.total_warnings > 0:
+        lines.append("")
+        lines.append(f"Warnings ({result.total_warnings}):")
+        for stage in result.all_stages:
+            for warning in stage.warnings:
+                lines.append(f"  [{stage.stage_name}] {warning}")
+        for warning in result.warnings:
+            lines.append(f"  [harness] {warning}")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def run(settings: HarnessSettings) -> None:
@@ -531,70 +670,74 @@ def run(settings: HarnessSettings) -> None:
     tracker = RequestTracker()
 
     try:
-      submit_rows = _read_jsonl(settings.submit_requests_jsonl)
-      input_rows = _read_jsonl(settings.input_jsonl)
-      output_rows = _read_jsonl(settings.output_jsonl)
-      outcome_rows = _read_jsonl(settings.outcomes_jsonl)
+        submit_rows = _read_jsonl(settings.submit_requests_jsonl)
+        input_rows = _read_jsonl(settings.input_jsonl)
+        output_rows = _read_jsonl(settings.output_jsonl)
+        outcome_rows = _read_jsonl(settings.outcomes_jsonl)
 
-      input_status = "PASS" if result.input_stage.passed else "FAIL"
-      output_status = "PASS" if result.output_stage.passed else "FAIL"
-      outcome_status = "PASS" if result.outcome_stage.passed else "FAIL"
+        input_status = "PASS" if result.input_stage.passed else "FAIL"
+        output_status = "PASS" if result.output_stage.passed else "FAIL"
+        outcome_status = "PASS" if result.outcome_stage.passed else "FAIL"
 
-      input_errors_str = "; ".join(result.input_stage.errors)
-      output_errors_str = "; ".join(result.output_stage.errors)
-      outcome_errors_str = "; ".join(result.outcome_stage.errors)
+        input_errors_str = "; ".join(result.input_stage.errors)
+        output_errors_str = "; ".join(result.output_stage.errors)
+        outcome_errors_str = "; ".join(result.outcome_stage.errors)
 
-      for idx, row in enumerate(submit_rows):
-        request_id = row.get("request_id")
-        agent_id = row.get("agent_id")
-        step_id = row.get("step_id")
-        if isinstance(request_id, str) and isinstance(agent_id, str):
-          tracker.add_submit_request(
-            request_id,
-            agent_id,
-            step_id if isinstance(step_id, str) else None,
-          )
-          tracker.set_input_status(request_id, request_id, input_status)
-          tracker.set_output_status(request_id, output_status, input_errors_str or output_errors_str)
+        for idx, row in enumerate(submit_rows):
+            request_id = row.get("request_id")
+            agent_id = row.get("agent_id")
+            step_id = row.get("step_id")
+            if isinstance(request_id, str) and isinstance(agent_id, str):
+                tracker.add_submit_request(
+                    request_id,
+                    agent_id,
+                    step_id if isinstance(step_id, str) else None,
+                )
+                tracker.set_input_status(request_id, request_id, input_status)
+                tracker.set_output_status(
+                    request_id, output_status, input_errors_str or output_errors_str
+                )
 
-          outcome_warnings_str = ""
-          outcome_error_str = ""
-          tech_keywords_str = ""
+                outcome_warnings_str = ""
+                outcome_error_str = ""
+                tech_keywords_str = ""
 
-          if idx in result.outcome_keywords:
-            keywords_obj = result.outcome_keywords[idx]
-            if hasattr(keywords_obj, "computer_languages"):
-              langs = getattr(keywords_obj, "computer_languages", [])
-              dbs = getattr(keywords_obj, "databases", [])
-              other = getattr(keywords_obj, "other", [])
-              tech_keywords_str = ", ".join(langs + dbs + other)
+                if idx in result.outcome_keywords:
+                    keywords_obj = result.outcome_keywords[idx]
+                    if hasattr(keywords_obj, "computer_languages"):
+                        langs = getattr(keywords_obj, "computer_languages", [])
+                        dbs = getattr(keywords_obj, "databases", [])
+                        other = getattr(keywords_obj, "other", [])
+                        tech_keywords_str = ", ".join(langs + dbs + other)
 
-          if idx in result.outcome_warnings_by_index:
-            warnings_list = result.outcome_warnings_by_index[idx]
-            outcome_warnings_str = "; ".join(warnings_list)
+                if idx in result.outcome_warnings_by_index:
+                    warnings_list = result.outcome_warnings_by_index[idx]
+                    outcome_warnings_str = "; ".join(warnings_list)
 
-          if outcome_errors_str:
-            outcome_error_str = outcome_errors_str
+                if outcome_errors_str:
+                    outcome_error_str = outcome_errors_str
 
-          tracker.set_outcome_status(
-            request_id, outcome_status, tech_keywords_str, outcome_warnings_str
-          )
-          if outcome_error_str:
-            if idx < len(outcome_rows):
-              tracker.requests[request_id].error_msg = outcome_error_str
+                tracker.set_outcome_status(
+                    request_id, outcome_status, tech_keywords_str, outcome_warnings_str
+                )
+                if outcome_error_str:
+                    if idx < len(outcome_rows):
+                        tracker.requests[request_id].error_msg = outcome_error_str
 
-      csv_files = export_csv_by_agent(tracker, results_dir, timestamp)
-      summary_file = export_summary_csv(tracker, results_dir, timestamp)
+        csv_files = export_csv_by_agent(tracker, results_dir, timestamp)
+        summary_file = export_summary_csv(tracker, results_dir, timestamp)
 
-      csv_output = f"CSV exports generated: {len(csv_files)} agent files + 1 summary\n"
-      for csv_file in csv_files:
-        csv_output += f"  📄 {csv_file.name}\n"
-      csv_output += f"  📄 {summary_file.name}\n"
-      print(csv_output, file=sys.stdout)
-      logger.info(csv_output)
+        csv_output = (
+            f"CSV exports generated: {len(csv_files)} agent files + 1 summary\n"
+        )
+        for csv_file in csv_files:
+            csv_output += f"  📄 {csv_file.name}\n"
+        csv_output += f"  📄 {summary_file.name}\n"
+        print(csv_output, file=sys.stdout)
+        logger.info(csv_output)
     except Exception as csv_error:
-      logger.warning(f"CSV export failed: {csv_error}")
+        logger.warning(f"CSV export failed: {csv_error}")
 
     if not result.passed:
-      error_summary = f"Verification failed with {result.total_errors} error(s)"
-      raise ValueError(error_summary)
+        error_summary = f"Verification failed with {result.total_errors} error(s)"
+        raise ValueError(error_summary)

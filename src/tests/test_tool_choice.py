@@ -192,4 +192,4 @@ def test_tool_choice_bedrock_open_weight_any() -> None:
     line = request.jsonl_line
     model_input = line["modelInput"]
     assert isinstance(model_input, dict)
-    assert model_input.get("tool_choice") == {"mode": "any"}
+    assert model_input.get("tool_choice") == "required"

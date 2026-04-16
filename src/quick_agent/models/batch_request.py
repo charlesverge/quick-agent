@@ -221,7 +221,7 @@ class BatchSubmitRequest(BaseModel):
             return {"any": {}}
         return None
 
-    def bedrock_invoke_tool_choice(self) -> dict[str, object] | None:
+    def bedrock_invoke_tool_choice(self) -> JsonValue | None:
         if self.tool_choice is None:
             return None
         if self.tool_choice.type == "function" and self.tool_choice.name is not None:
@@ -231,9 +231,11 @@ class BatchSubmitRequest(BaseModel):
             }
         mode = self.tool_choice.mode
         if mode == "required":
-            return {"mode": "required"}
+            return "required"
         if mode == "any":
-            return {"mode": "any"}
+            return "required"
+        if mode == "none":
+            return "none"
         return None
 
     def _build_converse_jsonl_line(self) -> dict[str, object]:

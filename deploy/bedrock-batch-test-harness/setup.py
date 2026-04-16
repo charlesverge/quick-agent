@@ -6,9 +6,9 @@ import shutil
 
 import anyio
 from settings import (
-  HarnessSettings,
-  resolve_runtime_settings,
-  write_runtime_settings,
+    HarnessSettings,
+    resolve_runtime_settings,
+    write_runtime_settings,
 )
 from utils import run_aws, write_jsonl
 
@@ -19,10 +19,14 @@ from quick_agent.orchestrator import Orchestrator
 from quick_agent.quick_agent import QuickAgent
 
 
-async def _build_requests(settings: HarnessSettings, reserved: int = 0) -> list[BatchSubmitRequest]:
+async def _build_requests(
+    settings: HarnessSettings, reserved: int = 0
+) -> list[BatchSubmitRequest]:
     limit = settings.count - reserved
-    if limit < 4:
-        raise ValueError("Harness count must be at least 4 for chain-agent, file-manager, and agent-memory coverage.")
+    if limit < 5:
+        raise ValueError(
+            "Harness count must be at least 5 for chain-agent, file-manager, agent-memory, and tool-choice coverage."
+        )
     orchestrator = Orchestrator(
         [settings.agents_dir], [settings.tools_dir], safe_dir=settings.safe_dir
     )
@@ -32,9 +36,13 @@ async def _build_requests(settings: HarnessSettings, reserved: int = 0) -> list[
     while index < limit:
         input_text = settings.input_template.format(i=index)
         if index == 1:
-            request = await orchestrator.batch(settings.chain_agent_id, TextInput(input_text))
+            request = await orchestrator.batch(
+                settings.chain_agent_id, TextInput(input_text)
+            )
         elif index == 2:
-            request = await orchestrator.batch(settings.file_manager_agent_id, TextInput(settings.file_manager_input))
+            request = await orchestrator.batch(
+                settings.file_manager_agent_id, TextInput(settings.file_manager_input)
+            )
         elif index == settings.agent_memory_index:
             agent = QuickAgent(
                 registry=orchestrator.registry,
@@ -46,6 +54,11 @@ async def _build_requests(settings: HarnessSettings, reserved: int = 0) -> list[
                 memory={"first_name": settings.agent_memory_first_name},
             )
             request = agent.batch()
+        elif index == settings.tool_choice_index:
+            request = await orchestrator.batch(
+                settings.tool_choice_agent_id,
+                TextInput(settings.probe_input),
+            )
         else:
             request = await orchestrator.batch(settings.agent, TextInput(input_text))
         requests.append(request)
@@ -80,7 +93,9 @@ def run(settings: HarnessSettings, reserved: int = 0) -> HarnessSettings:
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
     if settings.safe_dir.exists():
         shutil.rmtree(settings.safe_dir)
-    shutil.copytree(settings.harness_root / "fixtures" / "file-manager-dir", settings.safe_dir)
+    shutil.copytree(
+        settings.harness_root / "fixtures" / "file-manager-dir", settings.safe_dir
+    )
     resolved = resolve_runtime_settings(settings)
     write_runtime_settings(resolved)
     anyio.run(generate, resolved, reserved)

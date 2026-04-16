@@ -51,8 +51,17 @@ class HarnessSettings:
     agent_memory_agent_id: str = "harness-agent-memory"
     agent_memory_index: int = 3
     agent_memory_first_name: str = "Charles"
-    file_manager_input: str = Path(__file__).resolve().parent.joinpath("fixtures/file_manager_input.json").read_text(
-        encoding="utf-8"
+    tool_choice_agent_id: str = "harness-tool-choice-random-name"
+    tool_choice_index: int = 4
+    tool_choice_required_step_id: str = "random-required"
+    tool_choice_auto_step_id: str = "random-auto"
+    tool_choice_any_step_id: str = "random-any"
+    tool_choice_none_step_id: str = "random-none"
+    file_manager_input: str = (
+        Path(__file__)
+        .resolve()
+        .parent.joinpath("fixtures/file_manager_input.json")
+        .read_text(encoding="utf-8")
     )
 
     @property
