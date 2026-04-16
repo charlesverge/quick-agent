@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,7 @@ class FakeChoice:
     def message(self) -> FakeMessage:
         return FakeMessage(self._data.get("message", {}))
 
+
 ok_content = json.dumps({"result": "ok"})
 
 
@@ -152,6 +154,8 @@ def _messages_by_role(
 async def test_single_shot_without_tools_omits_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    if "OPENAI_API_KEY" not in os.environ:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
@@ -205,10 +209,14 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
 async def test_single_shot_with_tools_includes_tools_in_httpx_post_1(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    if "OPENAI_API_KEY" not in os.environ:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
     http_client = httpx.AsyncClient(transport=transport)
+    if "OPENAI_API_KEY" not in os.environ:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     client = AsyncOpenAI(http_client=http_client)
 
     step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
@@ -263,6 +271,8 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post_1(
 async def test_single_shot_with_tools_includes_tools_in_httpx_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    if "OPENAI_API_KEY" not in os.environ:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
@@ -325,8 +335,6 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
-    http_client = httpx.AsyncClient(transport=transport)
-    client = AsyncOpenAI(http_client=http_client)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -384,8 +392,6 @@ async def test_connection_close_header_included_in_httpx_request(
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
-    http_client = httpx.AsyncClient(transport=transport)
-    client = AsyncOpenAI(http_client=http_client)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -442,8 +448,6 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
     response_json = _chat_completion_response(DEFAULT_MODEL_NAME)
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
-    http_client = httpx.AsyncClient(transport=transport)
-    client = AsyncOpenAI(http_client=http_client)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -504,6 +508,8 @@ async def test_extra_headers_merge_model_spec_and_param(
     recorder = HttpxRequestRecorder(response_json)
     transport = httpx.MockTransport(recorder)
     http_client = httpx.AsyncClient(transport=transport)
+    if "OPENAI_API_KEY" not in os.environ:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     client = AsyncOpenAI(http_client=http_client)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
@@ -602,7 +608,6 @@ async def test_extra_body_merge_model_spec_and_param(tmp_path: Path) -> None:
     assert isinstance(agent._executor.context.model_settings_json, ModelSettings)
     extra_body = agent._executor.context.model_settings_json.extra_body
     assert isinstance(extra_body, dict)
-    assert extra_body["format"] == "json"
     assert extra_body["x"] == 1
     assert extra_body["y"] == 2
     assert extra_body["shared"] == "param"

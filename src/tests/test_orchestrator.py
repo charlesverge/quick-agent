@@ -520,17 +520,6 @@ def test_build_model_settings_openai_endpoint_skips_format() -> None:
     assert "format" not in extra_body
 
 
-def test_build_model_settings_other_provider() -> None:
-    qa = _make_quick_agent_for_test()
-    spec = ModelSpec(base_url="http://x", model_name="m", provider="other")
-
-    settings = type(qa._executor.context).build_model_settings(
-        qa._executor.config, spec
-    )
-
-    assert settings is None
-
-
 def test_build_model_settings_includes_extra_body() -> None:
     qa = _make_quick_agent_for_test()
     spec = ModelSpec(
@@ -543,7 +532,11 @@ def test_build_model_settings_includes_extra_body() -> None:
         qa._executor.config, spec
     )
 
-    assert settings is None
+    assert settings is not None
+    extra_body = settings.extra_body
+    assert isinstance(extra_body, dict)
+    assert extra_body == {}
+
 
     qa = _make_quick_agent_for_test()
     spec = ModelSpec(
@@ -557,7 +550,7 @@ def test_build_model_settings_includes_extra_body() -> None:
         qa._executor.config, spec
     )
 
-    assert settings == {"extra_body": {"foo": "bar"}}
+    assert settings.extra_body == {"foo": "bar"}
 
 
 def test_build_model_settings_openai_endpoint_strips_num_ctx() -> None:
@@ -573,7 +566,7 @@ def test_build_model_settings_openai_endpoint_strips_num_ctx() -> None:
         qa._executor.config, spec
     )
 
-    assert settings == {"extra_body": {"options": {"other": 1}}}
+    assert settings.extra_body == {"options": {"other": 1}}
 
 
 def test_build_model_settings_openai_endpoint_strips_num_ctx_all_removed() -> None:

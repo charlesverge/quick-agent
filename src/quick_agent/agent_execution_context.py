@@ -194,8 +194,8 @@ class AgentExecutionContext:
             if model_spec.base_url != "https://api.openai.com/v1":
                 if extra_body:
                     settings.extra_body = dict(extra_body)
-            elif extra_body:
-                extra_body_dict = dict(extra_body)
+            else:
+                extra_body_dict = dict(extra_body) if extra_body else {}
                 options = extra_body_dict.get("options")
                 if isinstance(options, dict) and "num_ctx" in options:
                     options = {k: v for k, v in options.items() if k != "num_ctx"}
