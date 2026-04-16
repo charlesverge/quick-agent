@@ -196,8 +196,6 @@ class AgentExecutionContext:
                         extra_body_dict["options"] = options
                     else:
                         extra_body_dict.pop("options", None)
-                if extra_body_dict:
-                    settings.extra_body = extra_body_dict
-
+                settings.extra_body = extra_body_dict
 
         return settings

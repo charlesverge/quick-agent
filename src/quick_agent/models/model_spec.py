@@ -29,6 +29,15 @@ class ModelSettings(BaseModel):
 
     model_config = {"extra": "allow", "arbitrary_types_allowed": True}
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, dict):
+            return self.model_dump(exclude_defaults=True) == other
+        if isinstance(other, ModelSettings):
+            return self.model_dump(exclude_defaults=True) == other.model_dump(
+                exclude_defaults=True
+            )
+        return False
+
 
 class ModelSpec(BaseModel):
     provider: str = Field(default="openai-compatible")
