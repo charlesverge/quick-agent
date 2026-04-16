@@ -20,7 +20,6 @@ class AgentSpec(BaseModel):
     tools: list[str] = Field(default_factory=list)
     schemas: dict[str, str] = Field(default_factory=dict)  # alias -> "module:ClassName"
     chain: list[ChainStepSpec] = Field(default_factory=list)
-    single_shot_use_pydantic_ai: bool = False
     output: OutputSpec = Field(default_factory=OutputSpec)
     handoff: HandoffSpec = Field(default_factory=HandoffSpec)
     content_processing: ContentProcessingSpec | None = None

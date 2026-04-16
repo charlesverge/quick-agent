@@ -6,9 +6,9 @@ import logging
 import os
 import typing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Type
-
+from typing import Any, Callable, Type
 from uuid import uuid4
+
 import openai
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -378,7 +378,7 @@ class AgentExecutor:
                 messages.append(user_message)
         extra_body: dict[str, JsonValue] | None = None
         if self.context.model_settings_json is not None:
-            extra_body_obj = self.context.model_settings_json.get("extra_body")
+            extra_body_obj = self.context.model_settings_json.extra_body
             if isinstance(extra_body_obj, dict):
                 extra_body = extra_body_obj
         if batch_request.response_format is not None:
@@ -409,14 +409,30 @@ class AgentExecutor:
                 if batch_request.response_format is not None
                 else openai.omit
             )
+            temperature = batch_request.model.temperature
+            max_completion_tokens = batch_request.model.max_completion_tokens
+            model_settings = self.context.model_settings_json
+            if model_settings.max_completion_tokens is not openai.omit:
+                max_completion_tokens = model_settings.max_completion_tokens
+            if model_settings.temperature is not openai.omit:
+                temperature = model_settings.temperature
             response = await client.chat.completions.create(
                 model=batch_request.model.model_name,
                 messages=messages,
-                temperature=batch_request.model.temperature,
-                max_completion_tokens=batch_request.model.max_completion_tokens,
+                temperature=temperature,
+                max_completion_tokens=max_completion_tokens,
                 response_format=response_format,
-                extra_body=extra_body,
                 tools=tools_payload or openai.omit,
+                extra_body=extra_body,
+                extra_headers=model_settings.extra_headers,
+                timeout=model_settings.timeout,
+                top_p=model_settings.top_p,
+                presence_penalty=model_settings.presence_penalty,
+                frequency_penalty=model_settings.frequency_penalty,
+                logit_bias=model_settings.logit_bias,
+                stop=model_settings.stop,
+                seed=model_settings.seed,
+                parallel_tool_calls=model_settings.parallel_tool_calls,
             )
         except openai.APIStatusError as error:
             body_obj = error.body

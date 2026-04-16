@@ -10,10 +10,9 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 import httpx
-from pydantic_ai.settings import ModelSettings
 
 from quick_agent.json_utils import json_compatible_value
-from quick_agent.models.model_spec import ModelSpec
+from quick_agent.models.model_spec import ModelSettings, ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +132,9 @@ class Recorder:
         self._http_log_max_entries = http_log_max_entries
         self._http_traffic_entries: list[dict[str, object]] = []
         self._enable_llm_request_logging = enable_llm_request_logging
-        self._llm_log_path = Path(llm_log_path) if llm_log_path is not None else Path("log/results.log")
+        self._llm_log_path = (
+            Path(llm_log_path) if llm_log_path is not None else Path("log/results.log")
+        )
         self.http_request_log: list[dict[str, object]] = []
         self.http_response_log: list[dict[str, object]] = []
         self.execution_log: list[ExecutionLogEntry] = []

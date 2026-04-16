@@ -8,10 +8,9 @@ import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, JsonValue
-from pydantic_ai.settings import ModelSettings
 
 from quick_agent.agent_config import AgentConfig
-from quick_agent.models.model_spec import ModelSpec
+from quick_agent.models.model_spec import ModelSettings, ModelSpec
 
 
 @dataclass
@@ -19,7 +18,7 @@ class AgentExecutionContext:
     config: AgentConfig
     extra_headers: dict[str, str] | None
     extra_body: dict[str, JsonValue] | None
-    model_settings_json: ModelSettings | None
+    model_settings_json: ModelSettings
     http_client: httpx.AsyncClient | None
     model_name: str
     client: openai.AsyncOpenAI | None
@@ -77,15 +76,15 @@ class AgentExecutionContext:
 
     def build_structured_model_settings(
         self, *, schema_cls: Type[BaseModel]
-    ) -> ModelSettings | None:
-        model_settings: ModelSettings | None = self.model_settings_json
+    ) -> ModelSettings:
+        model_settings: ModelSettings = self.model_settings_json
         base_url = self.config.model_spec.base_url.rstrip("/")
         if base_url == "https://api.openai.com/v1":
             if model_settings is None:
-                model_settings_dict: ModelSettings = {}
+                model_settings = ModelSettings()
             else:
-                model_settings_dict = model_settings.copy()
-            extra_body_obj = model_settings_dict.get("extra_body")
+                model_settings = model_settings.model_copy()
+            extra_body_obj = model_settings.extra_body
             extra_body: dict[str, object] = {}
             if isinstance(extra_body_obj, dict):
                 extra_body = dict(extra_body_obj)
@@ -99,8 +98,7 @@ class AgentExecutionContext:
                     "strict": True,
                 },
             }
-            model_settings_dict["extra_body"] = extra_body
-            model_settings = model_settings_dict
+            model_settings.extra_body = extra_body
         return model_settings
 
     def _apply_strict_schema(self, schema: dict[str, JsonValue]) -> None:
@@ -171,16 +169,16 @@ class AgentExecutionContext:
         model_spec: ModelSpec | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, JsonValue] | None = None,
-    ) -> ModelSettings | None:
+    ) -> ModelSettings:
         if model_spec is None:
             model_spec = config.model_spec
-        settings: ModelSettings = {}
+        settings = ModelSettings()
         if extra_headers is None:
             extra_headers = cls._build_extra_headers(config)
         if extra_body is None:
             extra_body = cls._build_extra_body(config)
         if extra_headers:
-            settings["extra_headers"] = extra_headers
+            settings.extra_headers = extra_headers
 
         if model_spec.provider == "openai-compatible":
             if model_spec.base_url != "https://api.openai.com/v1":
@@ -188,7 +186,7 @@ class AgentExecutionContext:
                 if extra_body:
                     extra_body_obj.update(extra_body)
                 if extra_body_obj:
-                    settings["extra_body"] = extra_body_obj
+                    settings.extra_body = extra_body_obj
             elif extra_body:
                 extra_body_dict = dict(extra_body)
                 options = extra_body_dict.get("options")
@@ -199,9 +197,7 @@ class AgentExecutionContext:
                     else:
                         extra_body_dict.pop("options", None)
                 if extra_body_dict:
-                    settings["extra_body"] = extra_body_dict
+                    settings.extra_body = extra_body_dict
 
-        if not settings:
-            return None
 
         return settings

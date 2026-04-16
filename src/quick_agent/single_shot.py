@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import typing
 from typing import TYPE_CHECKING, Type
 
 import openai
 from openai.types.chat import (
+    ChatCompletionCustomToolParam,
+    ChatCompletionFunctionToolParam,
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
@@ -17,10 +20,11 @@ from openai.types.shared_params.response_format_json_schema import (
 from pydantic import BaseModel
 
 from quick_agent.agent_utils import parse_structured_result
-from quick_agent.json_utils import json_compatible_value
 from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
 )
+from quick_agent.json_utils import json_compatible_value
+from quick_agent.models.model_spec import ModelSettings
 
 if TYPE_CHECKING:
     from quick_agent.quick_agent import QuickAgent
@@ -73,12 +77,12 @@ async def _run_single_shot_text_via_openai_sdk(
     user_prompt: str,
     instructions: str | None,
     system_prompt: str | list[str],
-    model_settings: dict[str, object] | None,
+    model_settings: ModelSettings,
 ) -> str:
     from quick_agent.executor import _should_convert_null
 
     toolsets = agent._toolsets_for_run()
-    tools: list[dict[str, object]] = []
+    tools: list[ChatCompletionFunctionToolParam] = []
     for ts in toolsets:
         for tool in ts.tools.values():
             tools.append(tool.function_schema.to_openai_tool())
@@ -92,17 +96,42 @@ async def _run_single_shot_text_via_openai_sdk(
     if convert_null is None:
         convert_null = _should_convert_null(agent.model_spec.base_url)
     max_iterations = 10
+    extra_body = model_settings.extra_body
+    temperature: float | openai.Omit | None = agent.model_spec.temperature
+    max_completion_tokens: int | openai.Omit | None = (
+        agent.model_spec.max_completion_tokens
+    )
+    if model_settings.max_completion_tokens is not openai.omit:
+        max_completion_tokens = model_settings.max_completion_tokens
+    if model_settings.temperature is not openai.omit:
+        temperature = model_settings.temperature
+    tools_arg = (
+        typing.cast(
+            typing.Iterable[
+                ChatCompletionFunctionToolParam | ChatCompletionCustomToolParam
+            ],
+            tools,
+        )
+        if tools
+        else openai.omit
+    )
     for _ in range(max_iterations):
-        extra_body: dict[str, object] | None = None
-        if model_settings is not None:
-            extra_body = model_settings.get("extra_body")
         response = await client.chat.completions.create(
             model=agent.model_spec.model_name,
             messages=messages,
-            tools=tools if tools else None,
-            temperature=agent.model_spec.temperature,
-            max_completion_tokens=agent.model_spec.max_completion_tokens,
+            tools=tools_arg,
+            temperature=temperature,
+            max_completion_tokens=max_completion_tokens,
             extra_body=extra_body,
+            extra_headers=model_settings.extra_headers,
+            timeout=model_settings.timeout,
+            top_p=model_settings.top_p,
+            presence_penalty=model_settings.presence_penalty,
+            frequency_penalty=model_settings.frequency_penalty,
+            logit_bias=model_settings.logit_bias,
+            stop=model_settings.stop,
+            seed=model_settings.seed,
+            parallel_tool_calls=model_settings.parallel_tool_calls,
         )
         agent._capture_openai_sdk_metrics(response)
         if not response.choices:
@@ -114,14 +143,20 @@ async def _run_single_shot_text_via_openai_sdk(
                 "content": "",
             }
         else:
-            message_dict = message_obj.model_dump(exclude_unset=True)
+            message_dict = typing.cast(
+                ChatCompletionMessageParam,
+                message_obj.model_dump(exclude_unset=True),
+            )
         messages.append(message_dict)
         if not message_obj.tool_calls:
             content = message_obj.content
             return content if content else ""
         for tool_call in message_obj.tool_calls:
-            tool_name = tool_call.function.name
-            tool_args_str = tool_call.function.arguments
+            tool_function = getattr(tool_call, "function", None)
+            if tool_function is None:
+                continue
+            tool_name = tool_function.name
+            tool_args_str = tool_function.arguments
             tool_args: dict[str, object] = {}
             if tool_args_str:
                 tool_args = json.loads(tool_args_str)
@@ -147,7 +182,7 @@ async def _run_single_shot_structured_via_openai_sdk(
     user_prompt: str,
     instructions: str | None,
     system_prompt: str | list[str],
-    model_settings: dict[str, object] | None,
+    model_settings: ModelSettings,
 ) -> BaseModel:
     if agent.has_tools():
         raise ValueError(
@@ -171,17 +206,21 @@ async def _run_single_shot_structured_via_openai_sdk(
                 "strict": True,
             },
         }
-        extra_body = None
-        if model_settings is not None:
-            extra_body = model_settings.get("extra_body")
-
         response = await client.chat.completions.create(
             model=agent.model_spec.model_name,
             messages=messages,
             temperature=agent.model_spec.temperature,
             max_completion_tokens=agent.model_spec.max_completion_tokens,
             response_format=response_format,
-            extra_body=extra_body,
+            extra_body=model_settings.extra_body,
+            extra_headers=model_settings.extra_headers,
+            timeout=model_settings.timeout,
+            top_p=model_settings.top_p,
+            presence_penalty=model_settings.presence_penalty,
+            frequency_penalty=model_settings.frequency_penalty,
+            logit_bias=model_settings.logit_bias,
+            stop=model_settings.stop,
+            seed=model_settings.seed,
         )
     except openai.APIStatusError as error:
         message = _extract_openai_error_message(error)
@@ -210,10 +249,15 @@ async def run_single_shot(
     user_prompt = agent._build_single_shot_prompt()
     instructions = agent.loaded.instructions
     system_prompt = agent.loaded.system_prompt
-    model_settings = agent._executor.context.model_settings_json
+    model_settings: ModelSettings = (
+        agent._executor.context.model_settings_json or ModelSettings()
+    )
     if schema_cls is not None:
-        model_settings = agent._executor.context.build_structured_model_settings(
-            schema_cls=schema_cls
+        model_settings = (
+            agent._executor.context.build_structured_model_settings(
+                schema_cls=schema_cls
+            )
+            or ModelSettings()
         )
 
     agent._recorder._record_llm_request(

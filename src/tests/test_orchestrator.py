@@ -10,16 +10,12 @@ import openai
 import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.settings import ModelSettings
-from pydantic_ai.tools import Tool
-from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent import agent_execution_context as agent_execution_context_module
 from quick_agent import agent_model_utils as agent_model_utils_module
 from quick_agent import agent_tools as tools_module
 from quick_agent import input_adaptors as input_adaptors_module
 from quick_agent import quick_agent as qa_module
-from quick_agent.toolset import AgentToolset, Tool as AgentTool
 from quick_agent import single_shot as single_shot_module
 from quick_agent.agent_call_tool import AgentCallTool
 from quick_agent.agent_model_utils import build_model
@@ -47,6 +43,7 @@ from quick_agent.models.content_processing_spec import (
     SampleSpec,
 )
 from quick_agent.models.handoff_spec import HandoffSpec
+from quick_agent.models.model_spec import ModelSettings
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.orchestrator import Orchestrator
@@ -57,6 +54,8 @@ from quick_agent.quick_agent import (
     resolve_schema,
 )
 from quick_agent.recorder import ExecutionLogEntry
+from quick_agent.toolset import AgentToolset
+from quick_agent.toolset import Tool as AgentTool
 
 
 class DummyProvider:
@@ -587,13 +586,17 @@ def test_build_model_settings_openai_endpoint_strips_num_ctx_all_removed() -> No
         qa._executor.config, spec
     )
 
-    assert settings is None
+    assert settings is not None
+    extra_body = settings.extra_body
+    assert isinstance(extra_body, dict)
+    num_ctx = extra_body.get("options", {}).get("num_ctx")
+    assert num_ctx is None
 
 
 def test_build_structured_model_settings_non_openai_passthrough() -> None:
     qa = _make_quick_agent_for_test()
     schema = ExampleSchema
-    settings: ModelSettings = {"extra_body": {"format": "json"}}
+    settings = ModelSettings(extra_body={"format": "json"})
     qa._executor.config.model_spec = ModelSpec(
         base_url="http://localhost",
         model_name="m",
@@ -618,7 +621,7 @@ def test_build_structured_model_settings_openai_injects_schema() -> None:
     result = qa._executor.context.build_structured_model_settings(schema_cls=schema)
 
     assert result is not None
-    extra_body_obj = result.get("extra_body")
+    extra_body_obj = result.extra_body
     assert extra_body_obj is not None
     assert isinstance(extra_body_obj, dict)
     response_format_obj = extra_body_obj["response_format"]
@@ -653,7 +656,7 @@ def test_build_structured_model_settings_openai_injects_required_optional_fields
     )
 
     assert result is not None
-    extra_body_obj = result.get("extra_body")
+    extra_body_obj = result.extra_body
     assert isinstance(extra_body_obj, dict)
     response_format_obj = extra_body_obj["response_format"]
     assert isinstance(response_format_obj, dict)
@@ -839,7 +842,7 @@ async def test_run_step_structured_parses_json_with_fallback(
         qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
         qa.loaded = loaded
         qa.model_spec = ModelSpec(base_url="http://x", model_name="m")
-        qa._executor.context.model_settings_json = {"extra_body": {"format": "json"}}
+        qa._executor.context.model_settings_json = ModelSettings(extra_body={"format": "json"})
         qa.toolset = RecordingToolset()
         qa.tool_ids = []
         qa.run_input = run_input
@@ -2107,50 +2110,6 @@ async def test_run_single_shot_structured_rejects_tools() -> None:
 
 
 @pytest.mark.anyio
-async def test_run_single_shot_structured_still_uses_batch_call_when_flag_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = AgentSpec(
-        name="test",
-        model=ModelSpec(base_url="http://x", model_name="m"),
-        chain=[],
-        single_shot_use_pydantic_ai=True,
-        schemas={"Output": "test_orchestrator:OutputSchema"},
-        output=OutputSpec(file=None, output_schema="Output"),
-    )
-    loaded = LoadedAgentFile.from_parts(
-        spec=spec,
-        instructions="Return structured output.",
-        system_prompt="",
-        step_prompts={},
-    )
-    run_input = RunInput(source_path="in.txt", kind="text", text="hi", data=None)
-
-    async def batch_call(request: BatchSubmitRequest) -> BatchImportRequest:
-        return BatchImportRequest(
-            request_id=request.request_id,
-            payload={"state": "completed", "output": {"msg": "ok"}},
-        )
-
-    qa = _make_quick_agent_for_test(
-        loaded=loaded,
-        run_input=run_input,
-        batch_call=batch_call,
-    )
-    qa.loaded = loaded
-    qa.model_spec = spec.model
-    qa.toolset = RecordingToolset()
-    qa.tool_ids = []
-    qa.run_input = run_input
-    qa.state = {"agent_id": "a", "steps": {}, "last_step_output": None}
-
-    output = await qa._run_single_shot()
-
-    assert isinstance(output, OutputSchema)
-    assert output.msg == "ok"
-
-
-@pytest.mark.anyio
 async def test_run_text_step_propagates_unexpected_model_behavior_with_request_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2335,7 +2294,7 @@ async def test_run_text_step_unexpected_model_behavior_uses_last_http_log_entry_
 @pytest.mark.anyio
 async def test_http_hook_recorders_store_entries_on_quick_agent() -> None:
     qa = _make_quick_agent_for_test()
-    qa._executor.context.model_settings_json = None
+    qa._executor.context.model_settings_json = ModelSettings()
     request = httpx.Request(
         method="POST",
         url="http://localhost:11434/v1/chat/completions",
@@ -3476,8 +3435,8 @@ async def test_agent_processor_run_batch_simple_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test run_batch returns completed BatchImportRequest without tools."""
-    from quick_agent.models.batch_request import BatchImportRequest
     from quick_agent.agent_processor import AgentProcessor
+    from quick_agent.models.batch_request import BatchImportRequest
 
     async def fake_local_batch_call(
         self, batch_request: BatchSubmitRequest
@@ -3514,8 +3473,8 @@ async def test_agent_processor_run_batch_with_tool_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test run_batch handles tool calls and completes."""
-    from quick_agent.models.batch_request import BatchImportRequest
     from quick_agent.agent_processor import AgentProcessor
+    from quick_agent.models.batch_request import BatchImportRequest
 
     call_count = 0
 
@@ -3579,7 +3538,6 @@ async def test_orchestrator_batch_execute_single_shot_integration(
 ) -> None:
     """Test batch_execute completes single-shot agent with real registry."""
     from quick_agent.models.batch_request import BatchImportRequest
-    from quick_agent.agent_processor import AgentProcessor
 
     agent_dir = Path(__file__).parent / "fixtures" / "batch_test_mode"
 

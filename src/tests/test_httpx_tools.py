@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import httpx
 import openai
@@ -14,6 +13,7 @@ from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import TextInput
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
+from quick_agent.models.model_spec import ModelSettings
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.quick_agent import QuickAgent
 from quick_agent.toolset import AgentToolset
@@ -95,15 +95,6 @@ class FakeResponse:
         return self._data.get("created", 123)
 
 
-class FakeChoice:
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    @property
-    def message(self) -> FakeMessage:
-        return FakeMessage(self._data.get("message", {}))
-
-
 class FakeMessage:
     def __init__(self, data: dict[str, Any]) -> None:
         self._data = data
@@ -120,6 +111,14 @@ class FakeMessage:
     def tool_calls(self) -> list[dict[str, Any]] | None:
         return self._data.get("tool_calls")
 
+
+class FakeChoice:
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    @property
+    def message(self) -> FakeMessage:
+        return FakeMessage(self._data.get("message", {}))
 
 ok_content = json.dumps({"result": "ok"})
 
@@ -600,8 +599,8 @@ async def test_extra_body_merge_model_spec_and_param(tmp_path: Path) -> None:
     assert agent._executor.context.extra_body["shared"] == "param"
 
     # model settings includes format=json for non-openai base_url
-    assert isinstance(agent._executor.context.model_settings_json, dict)
-    extra_body = agent._executor.context.model_settings_json.get("extra_body")
+    assert isinstance(agent._executor.context.model_settings_json, ModelSettings)
+    extra_body = agent._executor.context.model_settings_json.extra_body
     assert isinstance(extra_body, dict)
     assert extra_body["format"] == "json"
     assert extra_body["x"] == 1

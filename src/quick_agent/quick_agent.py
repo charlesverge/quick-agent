@@ -9,11 +9,9 @@ from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict
 from uuid import uuid4
 
 import httpx
-from httpx._config import DEFAULT_LIMITS
 import openai
+from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, JsonValue
-from pydantic_ai.settings import ModelSettings
-from quick_agent.toolset import AgentToolset
 
 from quick_agent.agent_config import AgentConfig
 from quick_agent.agent_model_utils import resolve_schema
@@ -21,10 +19,8 @@ from quick_agent.agent_processor import AgentProcessor
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.agent_utils import (
-    _as_agent_result,
     agent_results_to_str,
     extract_finish_reason,
-    normalize_tool_calls,
     normalize_usage_metrics,
     parse_structured_result,
 )
@@ -44,16 +40,17 @@ from quick_agent.models.batch_request import (
     BatchSubmitRequest,
     BatchToolDefinition,
 )
-from quick_agent.tools_loader import load_tool_definitions
 from quick_agent.models.chain_step_spec import ChainStepSpec
 from quick_agent.models.content_processing_spec import ChunkProcessingSpec
 from quick_agent.models.loaded_agent_file import LoadedAgentFile
-from quick_agent.models.model_spec import ModelSpec
+from quick_agent.models.model_spec import ModelSettings, ModelSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.output import write_output
 from quick_agent.prompting import make_user_prompt
 from quick_agent.recorder import Recorder
 from quick_agent.samplers.simple_ratios import SampleRatios
+from quick_agent.tools_loader import load_tool_definitions
+from quick_agent.toolset import AgentToolset
 from quick_agent.types import AgentResult, StepOutput
 
 logger = logging.getLogger(__name__)
@@ -456,7 +453,7 @@ class QuickAgent:
     ) -> BatchSubmitRequest:
         response_format: dict[str, JsonValue] | None = None
         if model_settings is not None:
-            extra_body_obj = model_settings.get("extra_body")
+            extra_body_obj = model_settings.extra_body
             if isinstance(extra_body_obj, dict):
                 response_format_obj = extra_body_obj.get("response_format")
                 if isinstance(response_format_obj, dict):

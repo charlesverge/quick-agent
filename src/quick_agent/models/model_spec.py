@@ -2,7 +2,32 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
+import httpx
+import openai
+from openai._types import Headers
 from pydantic import BaseModel, Field, JsonValue
+
+
+class ModelSettings(BaseModel):
+    """Settings to configure an LLM."""
+
+    max_completion_tokens: Optional[int] | openai.Omit = openai.omit
+    temperature: Optional[float] | openai.Omit = openai.omit
+    top_p: Optional[float] | openai.Omit = openai.omit
+    timeout: float | httpx.Timeout | None = None
+    parallel_tool_calls: bool | openai.Omit = openai.omit
+    seed: Optional[int] | openai.Omit = openai.omit
+    presence_penalty: Optional[float] | openai.Omit = openai.omit
+    frequency_penalty: Optional[float] | openai.Omit = openai.omit
+    logit_bias: Optional[dict[str, int]] | openai.Omit = openai.omit
+    stop: Optional[list[str]] | openai.Omit = openai.omit
+    extra_headers: Optional[Headers] | None = None
+    thinking: bool | str | None = None
+    extra_body: Optional[object] | openai.Omit = openai.omit
+
+    model_config = {"extra": "allow", "arbitrary_types_allowed": True}
 
 
 class ModelSpec(BaseModel):

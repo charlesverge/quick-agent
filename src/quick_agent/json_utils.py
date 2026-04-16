@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import openai
+
 
 def extract_first_json_object(text: str) -> str:
     """
@@ -40,6 +42,8 @@ def extract_first_json_object(text: str) -> str:
 def json_compatible_value(value: object) -> object:
     if value is None:
         return None
+    if value is openai.omit:
+        return None
     if isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):
@@ -53,7 +57,6 @@ def json_compatible_value(value: object) -> object:
         return [json_compatible_value(item) for item in value]
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
-        payload = model_dump(mode="json")
-        if isinstance(payload, dict):
-            return json_compatible_value(payload)
+        payload = model_dump(mode="json", warnings="none", fallback=lambda _: None)
+        return json_compatible_value(payload)
     return str(value)
