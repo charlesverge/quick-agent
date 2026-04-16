@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from quick_agent.agent_state import AgentState
-from quick_agent.models.batch_request import BatchAgentContext, BatchModelConfig, BatchMessage
+from quick_agent.models.batch_request import (
+    BatchAgentContext,
+    BatchModelConfig,
+    BatchMessage,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -134,7 +138,9 @@ def test_executor_state_mutation_visible_in_quick_agent() -> None:
     # Mutate via agent.state directly (as _import_chain_result does)
     agent.state["steps"]["generate_random_word"] = {"random_word": "oak"}
     # Executor config must reflect the mutation
-    assert agent._executor.config.state["steps"]["generate_random_word"] == {"random_word": "oak"}
+    assert agent._executor.config.state["steps"]["generate_random_word"] == {
+        "random_word": "oak"
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +175,9 @@ async def test_execute_tool_calls_injects_agent_state() -> None:
 
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(provider="openai-compatible", base_url="http://localhost", model_name="m"),
+        model=ModelSpec(
+            provider="openai-compatible", base_url="http://localhost", model_name="m"
+        ),
         output=OutputSpec(format="text"),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -187,7 +195,6 @@ async def test_execute_tool_calls_injects_agent_state() -> None:
         model_spec=spec.model,
         client=None,
         http_client=None,
-        tool_mode="auto",
         extra_headers=None,
         extra_body=None,
         record_http_traffic=False,
@@ -199,7 +206,9 @@ async def test_execute_tool_calls_injects_agent_state() -> None:
     )
     executor = AgentExecutor(config=config)
 
-    tool_calls: list[dict[str, object]] = [{"id": "tc-1", "name": "my_state_tool", "arguments": {"word": "quartz"}}]
+    tool_calls: list[dict[str, object]] = [
+        {"id": "tc-1", "name": "my_state_tool", "arguments": {"word": "quartz"}}
+    ]
     results = await executor._execute_tool_calls(tool_calls)
 
     assert len(results) == 1
@@ -230,7 +239,9 @@ async def test_execute_tool_calls_plain_tool_no_state() -> None:
 
     spec = AgentSpec(
         name="test",
-        model=ModelSpec(provider="openai-compatible", base_url="http://localhost", model_name="m"),
+        model=ModelSpec(
+            provider="openai-compatible", base_url="http://localhost", model_name="m"
+        ),
         output=OutputSpec(format="text"),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -245,7 +256,6 @@ async def test_execute_tool_calls_plain_tool_no_state() -> None:
         model_spec=spec.model,
         client=None,
         http_client=None,
-        tool_mode="auto",
         extra_headers=None,
         extra_body=None,
         record_http_traffic=False,

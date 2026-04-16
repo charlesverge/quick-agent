@@ -23,7 +23,6 @@ class AgentConfig:
     model_spec: ModelSpec
     client: openai.AsyncOpenAI | None
     http_client: httpx.AsyncClient | None
-    tool_mode: str
     extra_headers: dict[str, str] | None
     extra_body: dict[str, JsonValue] | None
     record_http_traffic: bool

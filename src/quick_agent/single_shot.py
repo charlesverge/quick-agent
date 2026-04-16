@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.toolsets import FunctionToolset
 
 from quick_agent.agent_utils import parse_structured_result
 from quick_agent.exceptions import (
@@ -77,11 +78,21 @@ async def _run_single_shot_text_via_pydantic_ai(
     model_settings: ModelSettings | None,
 ) -> str:
     toolsets = agent._toolsets_for_run()
+    toolset_func = FunctionToolset()
+    for ts in toolsets:
+        for tool in ts.tools.values():
+            toolset_func.add_function(
+                func=tool.function,
+                name=tool.name,
+                description=tool.description,
+            )
+    # Note: model_name is a string - pydantic_ai Agent accepts string model names
+    model_name = agent._executor.context.model_name
     runner = Agent(
-        agent._executor.context.model,
+        model_name,
         instructions=instructions,
         system_prompt=system_prompt,
-        toolsets=toolsets,
+        toolsets=[toolset_func],
         output_type=str,
         model_settings=model_settings,
     )
@@ -103,11 +114,20 @@ async def _run_single_shot_structured_via_pydantic_ai(
     model_settings: ModelSettings | None,
 ) -> BaseModel:
     toolsets = agent._toolsets_for_run()
+    toolset_func = FunctionToolset()
+    for ts in toolsets:
+        for tool in ts.tools.values():
+            toolset_func.add_function(
+                func=tool.function,
+                name=tool.name,
+                description=tool.description,
+            )
+    model_name = agent._executor.context.model_name
     runner = Agent(
-        agent._executor.context.model,
+        model_name,
         instructions=instructions,
         system_prompt=system_prompt,
-        toolsets=toolsets,
+        toolsets=[toolset_func],
         output_type=schema_cls,
         model_settings=model_settings,
     )

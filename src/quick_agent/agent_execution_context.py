@@ -8,11 +8,9 @@ import httpx
 import openai
 from httpx._config import DEFAULT_LIMITS
 from pydantic import BaseModel, JsonValue
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 
 from quick_agent.agent_config import AgentConfig
-from quick_agent.agent_model_utils import build_model
 from quick_agent.models.model_spec import ModelSpec
 
 
@@ -23,7 +21,7 @@ class AgentExecutionContext:
     extra_body: dict[str, JsonValue] | None
     model_settings_json: ModelSettings | None
     http_client: httpx.AsyncClient | None
-    model: OpenAIChatModel
+    model_name: str
     client: openai.AsyncOpenAI | None
     effective_base_url: str
     last_run_metrics: dict[str, object] | None = None
@@ -55,27 +53,24 @@ class AgentExecutionContext:
             if model_settings_json is not None
             else cls.build_model_settings(config)
         )
-        model = build_model(
-            config.model_spec,
-            http_client=http_client,
-            client=config.client,
-            tool_mode=config.tool_mode,
-        )
         client = config.client
         if client is None:
-            client = cls._ensure_client_from_model(config, model)
-        effective_base_url = (
-            str(client.base_url).rstrip("/")
-            if client is not None
-            else config.model_spec.base_url.rstrip("/")
-        )
+            api_key = os.environ.get(config.model_spec.api_key_env, "noop")
+            timeout_seconds = config.model_spec.timeout_seconds
+            client = openai.AsyncOpenAI(
+                api_key=api_key,
+                base_url=config.model_spec.base_url,
+                timeout=timeout_seconds,
+                http_client=http_client,
+            )
+        effective_base_url = config.model_spec.base_url.rstrip("/")
         return cls(
             config=config,
             extra_headers=extra_headers,
             extra_body=extra_body,
             model_settings_json=model_settings_json,
             http_client=http_client,
-            model=model,
+            model_name=config.model_spec.model_name,
             client=client,
             effective_base_url=effective_base_url,
         )
@@ -210,15 +205,3 @@ class AgentExecutionContext:
             return None
 
         return settings
-
-    @staticmethod
-    def _ensure_client_from_model(
-        config: AgentConfig, model: OpenAIChatModel
-    ) -> openai.AsyncOpenAI | None:
-        if config.client is not None:
-            return config.client
-        model_client = getattr(model, "client", None)
-        if isinstance(model_client, openai.AsyncOpenAI):
-            config.client = model_client
-            return model_client
-        return None

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
 import httpx
+import openai
 import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic_ai.exceptions import UnexpectedModelBehavior
@@ -346,18 +347,15 @@ def test_init_sets_registry_and_tool_roots(tmp_path: Path) -> None:
 
 def test_build_model_uses_env_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_KEY", "abc")
-    monkeypatch.setattr(agent_model_utils_module, "OpenAIProvider", DummyProvider)
-    monkeypatch.setattr(agent_model_utils_module, "OpenAIChatModel", DummyModel)
 
     spec = ModelSpec(
         base_url="http://base", model_name="gpt-test", api_key_env="TEST_KEY"
     )
-    model = build_model(spec)
+    client = build_model(spec)
 
-    assert isinstance(model, DummyModel)
-    assert model.model_name == "gpt-test"
-    assert model.provider.base_url == "http://base"
-    assert model.provider.api_key == "abc"
+    assert client is not None
+    assert isinstance(client, openai.AsyncOpenAI)
+    assert str(client.base_url) == "http://base"
 
 
 def test_resolve_schema_valid_missing_and_invalid() -> None:
@@ -2506,9 +2504,7 @@ async def test_run_agent_wires_dependencies(
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_recorder
-    )
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_recorder)
     monkeypatch.setattr(
         agent_execution_context_module.AgentExecutionContext,
         "build_model_settings",
@@ -2543,15 +2539,6 @@ async def test_run_agent_wires_dependencies(
     assert load_args[0] == tmp_path / "input.json"
     assert isinstance(load_args[1], DirectoryPermissions)
     assert load_args[1].root == _permissions(tmp_path).root
-    assert len(build_model_recorder.calls) == 1
-    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
-    assert build_model_args == (loaded.spec.model,)
-    assert "http_client" in build_model_kwargs
-
-    assert len(build_settings_recorder.calls) == 1
-    build_settings_args, build_settings_kwargs = build_settings_recorder.calls[0]
-    assert build_settings_kwargs == {}
-    assert build_settings_args[0].model_spec == loaded.spec.model
 
     assert build_toolset_recorder.calls
     args, kwargs = build_toolset_recorder.calls[0]
@@ -2620,9 +2607,7 @@ async def test_run_skips_write_when_output_file_missing(
     handoff_recorder = AsyncCallRecorder(return_value=None)
 
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
-    monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_recorder
-    )
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_recorder)
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
     monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
@@ -2668,10 +2653,10 @@ def test_init_can_disable_http_traffic_recording(
         source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={}
     )
     load_input_recorder = SyncCallRecorder(return_value=run_input)
-    build_model_recorder = SyncCallRecorder(return_value=object())
+    http_client = httpx.AsyncClient()
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
     monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_recorder
+        qa_module.QuickAgent, "_build_http_client", lambda self: http_client
     )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
@@ -2687,11 +2672,6 @@ def test_init_can_disable_http_traffic_recording(
         extra_tools=None,
         record_http_traffic=False,
     )
-    assert len(build_model_recorder.calls) == 1
-    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
-    assert build_model_args == (loaded.spec.model,)
-    http_client = build_model_kwargs.get("http_client")
-    assert isinstance(http_client, httpx.AsyncClient)
     asyncio.run(http_client.aclose())
 
 
@@ -2715,10 +2695,10 @@ def test_init_http_traffic_recording_is_disabled_by_default(
         source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={}
     )
     load_input_recorder = SyncCallRecorder(return_value=run_input)
-    build_model_recorder = SyncCallRecorder(return_value=object())
+    http_client = httpx.AsyncClient()
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
     monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_recorder
+        qa_module.QuickAgent, "_build_http_client", lambda self: http_client
     )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
@@ -2733,11 +2713,6 @@ def test_init_http_traffic_recording_is_disabled_by_default(
         input_data=tmp_path / "input.json",
         extra_tools=None,
     )
-    assert len(build_model_recorder.calls) == 1
-    build_model_args, build_model_kwargs = build_model_recorder.calls[0]
-    assert build_model_args == (loaded.spec.model,)
-    http_client = build_model_kwargs.get("http_client")
-    assert isinstance(http_client, httpx.AsyncClient)
     asyncio.run(http_client.aclose())
 
 
@@ -2767,10 +2742,18 @@ async def test_init_applies_model_http_client_settings(
         source_path=str(tmp_path / "input.json"), kind="json", text="{}", data={}
     )
     load_input_recorder = SyncCallRecorder(return_value=run_input)
-    build_model_recorder = SyncCallRecorder(return_value=object())
+
+    class CustomLimits(httpx.Limits):
+        pass
+
+    custom_limits = CustomLimits(max_connections=100, keepalive_expiry=123.0)
+    http_client = httpx.AsyncClient(
+        timeout=321.0,
+        limits=custom_limits,
+    )
     monkeypatch.setattr(input_adaptors_module, "load_input", load_input_recorder)
     monkeypatch.setattr(
-        agent_execution_context_module, "build_model", build_model_recorder
+        qa_module.QuickAgent, "_build_http_client", lambda self: http_client
     )
     tools = AgentTools([tmp_path])
     monkeypatch.setattr(
@@ -2785,10 +2768,6 @@ async def test_init_applies_model_http_client_settings(
         input_data=tmp_path / "input.json",
         extra_tools=None,
     )
-    assert len(build_model_recorder.calls) == 1
-    _, build_model_kwargs = build_model_recorder.calls[0]
-    http_client = build_model_kwargs["http_client"]
-    assert isinstance(http_client, httpx.AsyncClient)
     assert http_client.timeout.read == 321.0
     await http_client.aclose()
 

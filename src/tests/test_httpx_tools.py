@@ -7,7 +7,7 @@ import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from quick_agent import agent_execution_context as agent_execution_context_module
+from quick_agent import agent_model_utils as agent_model_utils_module
 from quick_agent import quick_agent as qa_module
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
@@ -56,7 +56,6 @@ class BuildModelStub:
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
-        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         return self.model
 
@@ -105,7 +104,7 @@ async def test_single_shot_without_tools_omits_tools_in_httpx_post(
         )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(
-            agent_execution_context_module, "build_model", BuildModelStub(model)
+            agent_model_utils_module, "build_model", BuildModelStub(model)
         )
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
@@ -165,7 +164,7 @@ async def test_single_shot_with_tools_includes_tools_in_httpx_post(
         )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(
-            agent_execution_context_module, "build_model", BuildModelStub(model)
+            agent_model_utils_module, "build_model", BuildModelStub(model)
         )
 
         step = ChainStepSpec(id="s1", kind="text", prompt_section="step:one")
@@ -231,7 +230,7 @@ async def test_single_shot_no_steps_system_prompt_only_includes_system_prompt(
         )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(
-            agent_execution_context_module, "build_model", BuildModelStub(model)
+            agent_model_utils_module, "build_model", BuildModelStub(model)
         )
 
         spec = AgentSpec(
@@ -295,7 +294,7 @@ async def test_single_shot_no_steps_instructions_only_includes_instructions(
         )
         model = OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
         monkeypatch.setattr(
-            agent_execution_context_module, "build_model", BuildModelStub(model)
+            agent_model_utils_module, "build_model", BuildModelStub(model)
         )
 
         spec = AgentSpec(
@@ -357,14 +356,13 @@ async def test_single_shot_extra_headers_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
-        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -428,14 +426,13 @@ async def test_connection_close_header_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
-        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -498,14 +495,13 @@ async def test_chain_step_extra_headers_included_in_httpx_request(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
-        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)
@@ -571,14 +567,13 @@ async def test_extra_headers_merge_model_spec_and_param(
         *,
         http_client: httpx.AsyncClient | None = None,
         client: object | None = None,
-        tool_mode: str = "default",
     ) -> OpenAIChatModel:
         provider = OpenAIProvider(
             base_url="https://example.test/v1", api_key="test", http_client=http_client
         )
         return OpenAIChatModel(DEFAULT_MODEL_NAME, provider=provider)
 
-    monkeypatch.setattr(agent_execution_context_module, "build_model", build_model_stub)
+    monkeypatch.setattr(agent_model_utils_module, "build_model", build_model_stub)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)

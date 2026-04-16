@@ -17,3 +17,4 @@ class ModelSpec(BaseModel):
     keepalive_expiry_seconds: float | None = Field(default=None, gt=0)
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, JsonValue] | None = None
+    convert_null: bool | None = Field(default=None)

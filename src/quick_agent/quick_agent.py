@@ -124,9 +124,7 @@ class QuickAgent:
         self._record_http_traffic: bool = record_http_traffic
 
         self._memory: dict[str, Any] = memory if memory is not None else {}
-
-        self.tool_mode: str = self.loaded.spec.tool_mode
-        logger.info(f"Initialized QuickAgent {agent_id}, tool_mode: {self.tool_mode}")
+        logger.info(f"Initialized QuickAgent {agent_id}")
         self.state: ChainState = self._init_state(agent_id=agent_id)
         self._http_client = self._build_http_client()
         executor_config = AgentConfig(
@@ -137,7 +135,6 @@ class QuickAgent:
             model_spec=self.model_spec,
             client=client,
             http_client=self._http_client,
-            tool_mode=self.tool_mode,
             extra_headers=extra_headers,
             extra_body=extra_body,
             record_http_traffic=self._record_http_traffic,

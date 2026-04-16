@@ -6,9 +6,9 @@ import logging
 import os
 import typing
 from dataclasses import dataclass
-from typing import Any, Callable, Type
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Callable, Type
 
+from uuid import uuid4
 import openai
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -30,20 +30,21 @@ from quick_agent.agent_tool_schema import (
     strip_agent_state_from_schema,
     takes_agent_state,
 )
-from quick_agent.agent_utils import (
+
+from .agent_utils import (
     _as_agent_result,
     extract_finish_reason,
     normalize_tool_calls,
     normalize_usage_metrics,
     parse_structured_result,
 )
-from quick_agent.exceptions import (
+from .exceptions import (
     QuickAgentChatNotSupportedException,
     QuickAgentException,
     QuickAgentToolsNotSupportedException,
 )
-from quick_agent.json_utils import json_compatible_value
-from quick_agent.models.batch_request import (
+from .json_utils import json_compatible_value
+from .models.batch_request import (
     BatchAgentContext,
     BatchImportOutcome,
     BatchImportRequest,
@@ -52,6 +53,15 @@ from quick_agent.models.batch_request import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _should_convert_null(base_url: str) -> bool:
+    """Determine if null content should be converted to empty string.
+
+    Ollama rejects messages with null content, converting to "" prevents errors.
+    Default behavior: convert for Ollama endpoints, not for OpenAI.
+    """
+    return "ollama" in base_url.lower()
 
 
 @dataclass
@@ -158,16 +168,10 @@ class AgentExecutor:
                 logger.info(
                     f"{prefix}: tool_id={tc_id} name={tc_name} > result_length={len(content)}"
                 )
-                results.append(
-                    ToolCallResult(id=tc_id, name=tc_name, content=content)
-                )
+                results.append(ToolCallResult(id=tc_id, name=tc_name, content=content))
             except Exception as exc:
-                logger.error(
-                    f"{prefix}: tool_id={tc_id} name={tc_name} > error={exc}"
-                )
-                results.append(
-                    ToolCallResult(id=tc_id, name=tc_name, error=str(exc))
-                )
+                logger.error(f"{prefix}: tool_id={tc_id} name={tc_name} > error={exc}")
+                results.append(ToolCallResult(id=tc_id, name=tc_name, error=str(exc)))
         return results
 
     def _build_next_request_with_tool_results(
@@ -338,6 +342,9 @@ class AgentExecutor:
         logger.debug(f"{prefix}: api_key_env={api_key_env}")
         client = self.context.build_client(self.config)
         messages: list[ChatCompletionMessageParam] = []
+        convert_null = self.config.model_spec.convert_null
+        if convert_null is None:
+            convert_null = _should_convert_null(self.config.model_spec.base_url)
         for batch_message in batch_request.messages:
             if batch_message.role == "system":
                 system_message: ChatCompletionSystemMessageParam = {
@@ -351,6 +358,8 @@ class AgentExecutor:
                 }
                 if batch_message.content is not None:
                     assistant_message["content"] = batch_message.content
+                elif convert_null:
+                    assistant_message["content"] = ""
                 if batch_message.tool_calls is not None:
                     assistant_message["tool_calls"] = batch_message.tool_calls  # type: ignore[typeddict-item]
                 messages.append(assistant_message)
@@ -379,9 +388,11 @@ class AgentExecutor:
         tools_payload: list[ChatCompletionToolUnionParam] = []
         if self.config.toolset is not None and self.config.tool_ids:
             for tool in self.config.toolset.tools.values():
-                params = tool.function_schema.json_schema
+                raw_params = tool.function_schema.json_schema
+                params: dict[str, Any] = dict(raw_params)
                 if takes_agent_state(tool.function):
-                    params = strip_agent_state_from_schema(params)
+                    stripped = strip_agent_state_from_schema(raw_params)
+                    params = dict(stripped)
                 function_def = FunctionDefinition(
                     name=tool.name,
                     description=tool.description or "",
@@ -393,9 +404,11 @@ class AgentExecutor:
                     )
                 )
         try:
-            response_format = typing.cast(
-                    ResponseFormat, batch_request.response_format
-                ) if batch_request.response_format is not None else openai.omit
+            response_format = (
+                typing.cast(ResponseFormat, batch_request.response_format)
+                if batch_request.response_format is not None
+                else openai.omit
+            )
             response = await client.chat.completions.create(
                 model=batch_request.model.model_name,
                 messages=messages,

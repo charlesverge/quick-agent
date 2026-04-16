@@ -12,14 +12,11 @@ from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.model_spec import ModelSpec
 from quick_agent.models.output_spec import OutputSpec
 
-ToolMode = Literal["default", "no_tools", "with_tools", "prompted_tools"]
-
 
 class AgentSpec(BaseModel):
     name: str
     description: str = ""
     model: ModelSpec = Field(default_factory=ModelSpec)
-    tool_mode: ToolMode = "default"
     tools: list[str] = Field(default_factory=list)
     schemas: dict[str, str] = Field(default_factory=dict)  # alias -> "module:ClassName"
     chain: list[ChainStepSpec] = Field(default_factory=list)
