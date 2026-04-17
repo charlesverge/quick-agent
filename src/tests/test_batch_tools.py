@@ -473,7 +473,7 @@ def test_create_batch_request_openai_structured_tools_response_as_tool_true_uses
     assert all(strict_flags)
 
 
-def test_create_batch_request_bedrock_structured_tools_response_as_tool_true_uses_final_result() -> (
+def test_create_batch_request_bedrock_structured_tools_defaults_response_as_tool_true() -> (
     None
 ):
     step = ChainStepSpec(
@@ -497,19 +497,10 @@ def test_create_batch_request_bedrock_structured_tools_response_as_tool_true_use
     qa._tools = AgentTools([tools_root])
     qa.tool_ids = ["filesystem_list_files"]
 
-    request = qa.create_batch_request_for_current_step(
-        step_id="s1",
-        step_kind="structured",
-        output_schema="Out",
-        instructions="system",
-        system_prompt="",
-        user_prompt="input",
-        model_settings=qa._executor.context.build_structured_model_settings(
-            schema_cls=ExampleSchema
-        ).model_copy(update={"response_as_tool": True}),
-    )
+    request = qa.batch()
 
     assert request.response_format is None
+    assert request.response_as_tool is True
     assert request.final_result_tool_enabled is True
     assert request.tools is not None
     names = [tool.name for tool in request.tools]
@@ -691,9 +682,7 @@ def test_create_batch_request_non_bedrock_structured_tools_response_as_tool_true
     assert "final_result" in names
 
 
-def test_create_batch_request_non_bedrock_structured_tools_response_as_tool_false_keeps_response_format() -> (
-    None
-):
+def test_batch_request_raises_when_agent_response_as_tool_false_with_tools() -> None:
     step = ChainStepSpec(
         id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
     )
@@ -703,6 +692,7 @@ def test_create_batch_request_non_bedrock_structured_tools_response_as_tool_fals
         chain=[step],
         schemas={"Out": f"{__name__}:ExampleSchema"},
         output=OutputSpec(file=None),
+        response_as_tool=False,
     )
     loaded = LoadedAgentFile.from_parts(
         spec=spec,

@@ -456,9 +456,10 @@ class QuickAgent:
         model_settings: ModelSettings,
         max_tool_calls: int = 3,
     ) -> BatchSubmitRequest:
-        response_as_tool = False
+        configured_response_as_tool: bool | None = None
         if isinstance(model_settings.response_as_tool, bool):
-            response_as_tool = model_settings.response_as_tool
+            configured_response_as_tool = model_settings.response_as_tool
+        response_as_tool = configured_response_as_tool is True
         response_format: dict[str, JsonValue] | None = None
         extra_body_obj = model_settings.extra_body
         if isinstance(extra_body_obj, dict):
@@ -495,6 +496,8 @@ class QuickAgent:
                 tools = [tool for tool in tools if tool.name in allowed_names]
         final_result_tool_enabled = False
         if response_format is not None and tools:
+            if configured_response_as_tool is None and self._is_bedrock_request():
+                response_as_tool = True
             if response_as_tool:
                 response_schema = self._extract_response_schema(response_format)
                 if any(tool.name == "final_result" for tool in tools):
@@ -1119,7 +1122,7 @@ class QuickAgent:
             return step.tool_choice
         return self.loaded.spec.tool_choice
 
-    def _resolve_response_as_tool(self, step: ChainStepSpec | None) -> bool:
+    def _resolve_response_as_tool(self, step: ChainStepSpec | None) -> bool | None:
         if step is not None and step.response_as_tool is not None:
             return step.response_as_tool
         return self.loaded.spec.response_as_tool
