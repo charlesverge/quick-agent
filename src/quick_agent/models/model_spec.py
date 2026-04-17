@@ -8,6 +8,7 @@ import httpx
 import openai
 from openai._types import Headers
 from pydantic import BaseModel, Field, JsonValue
+from quick_agent.models.chain_step_spec import ToolChoice
 
 
 class ModelSettings(BaseModel):
@@ -25,6 +26,7 @@ class ModelSettings(BaseModel):
     stop: Optional[list[str]] | openai.Omit = openai.omit
     extra_headers: Optional[Headers] | None = None
     thinking: bool | str | None = None
+    tool_choice: ToolChoice | None = None
     response_as_tool: bool | None = None
     extra_body: Optional[object] | openai.Omit = openai.omit
 

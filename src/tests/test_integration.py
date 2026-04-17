@@ -1013,4 +1013,4 @@ Return done.
     orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
     batch_request = anyio.run(orchestrator.batch, "tool_choice_any", input_path)
     assert batch_request.tool_choice is not None
-    assert batch_request.tool_choice.mode == "auto"
+    assert batch_request.tool_choice.mode == "any"

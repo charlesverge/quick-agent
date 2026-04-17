@@ -69,6 +69,9 @@ class Orchestrator:
         client: openai.AsyncOpenAI | None = None,
         memory: dict[str, object] | None = None,
     ) -> BatchSubmitRequest:
+        bedrock_model = self.registry.get(agent_id).spec.model.model_copy(
+            update={"provider": "bedrock"}
+        )
         self.agent = agent = QuickAgent(
             registry=self.registry,
             tools=self.tools,
@@ -76,6 +79,7 @@ class Orchestrator:
             agent_id=agent_id,
             input_data=input_data,
             extra_tools=extra_tools,
+            model=bedrock_model,
             record_http_traffic=record_http_traffic,
             enable_llm_request_logging=enable_llm_request_logging,
             llm_log_path=llm_log_path,
@@ -95,6 +99,9 @@ class Orchestrator:
         llm_log_path: Path | str | None = None,
         client: openai.AsyncOpenAI | None = None,
     ) -> BatchImportOutcome:
+        bedrock_model = self.registry.get(agent_id).spec.model.model_copy(
+            update={"provider": "bedrock"}
+        )
         self.agent = agent = QuickAgent(
             registry=self.registry,
             tools=self.tools,
@@ -102,6 +109,7 @@ class Orchestrator:
             agent_id=agent_id,
             input_data=input_data,
             extra_tools=extra_tools,
+            model=bedrock_model,
             record_http_traffic=record_http_traffic,
             enable_llm_request_logging=enable_llm_request_logging,
             llm_log_path=llm_log_path,

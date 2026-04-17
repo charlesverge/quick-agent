@@ -72,6 +72,10 @@ class ToolRunDeps(TypedDict):
     memory: dict[str, Any]
 
 
+class QuickAgentConfigError(ValueError):
+    pass
+
+
 class QuickAgent:
     def __init__(
         self,
@@ -450,7 +454,6 @@ class QuickAgent:
         system_prompt: str | list[str],
         user_prompt: str,
         model_settings: ModelSettings,
-        tool_choice: ToolChoice | None = None,
         max_tool_calls: int = 3,
     ) -> BatchSubmitRequest:
         response_as_tool = False
@@ -481,7 +484,7 @@ class QuickAgent:
         state: dict[str, object] = {}
         for key, value in state_obj.items():
             state[str(key)] = value
-        resolved_tool_choice = self._normalize_tool_choice(tool_choice)
+        resolved_tool_choice = self._normalize_tool_choice(model_settings.tool_choice)
         tools = self._batch_tools()
         if resolved_tool_choice is not None:
             mode = resolved_tool_choice.mode
@@ -508,12 +511,12 @@ class QuickAgent:
                 )
                 response_format = None
                 final_result_tool_enabled = True
-            elif self._is_bedrock_request(model_settings=model_settings):
-                raise ValueError(
+            elif self._is_bedrock_request():
+                raise QuickAgentConfigError(
                     "Configuration error: Bedrock requests cannot use response_format and tools together. "
                     "Set response_as_tool=true at the agent or step level."
                 )
-        if self._is_bedrock_request(model_settings=model_settings):
+        if self._is_bedrock_request():
             strict_tools: list[BatchToolDefinition] = []
             for tool in tools:
                 strict_tools.append(tool.model_copy(update={"strict": True}))
@@ -556,6 +559,7 @@ class QuickAgent:
         )
 
     def batch(self) -> BatchSubmitRequest:
+        self.model_spec.provider = "bedrock"
         if self.loaded.spec.chain:
             step_index = len(self.state["steps"])
             if step_index >= len(self.loaded.spec.chain):
@@ -575,7 +579,6 @@ class QuickAgent:
                 model_settings = self._executor.context.build_structured_model_settings(
                     schema_cls=schema_cls
                 )
-            tool_choice = self._resolve_tool_choice(step)
             max_tool_calls = self._resolve_max_tool_calls(step)
             return self.create_batch_request_for_current_step(
                 step_id=step.id,
@@ -584,10 +587,9 @@ class QuickAgent:
                 instructions=step_instructions,
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
-                model_settings=self._with_response_as_tool(
+                model_settings=self._resolve_model_settings(
                     model_settings=model_settings, step=step
                 ),
-                tool_choice=tool_choice,
                 max_tool_calls=max_tool_calls,
             )
 
@@ -605,16 +607,16 @@ class QuickAgent:
             instructions=self.loaded.instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=self._build_single_shot_prompt(),
-            model_settings=self._with_response_as_tool(
+            model_settings=self._resolve_model_settings(
                 model_settings=model_settings, step=None
             ),
-            tool_choice=self._resolve_tool_choice(None),
             max_tool_calls=self._resolve_max_tool_calls(None),
         )
 
     async def import_result(
         self, *, batch_import: BatchImportRequest
     ) -> BatchImportOutcome:
+        self.model_spec.provider = "bedrock"
         outcome = self._executor.import_outcome(batch_import=batch_import)
         if outcome.tool_calls is not None:
             pending = outcome.pending_submit_request
@@ -712,10 +714,9 @@ class QuickAgent:
                 instructions=next_instructions,
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
-                model_settings=self._with_response_as_tool(
+                model_settings=self._resolve_model_settings(
                     model_settings=next_model_settings, step=next_step
                 ),
-                tool_choice=self._resolve_tool_choice(next_step),
                 max_tool_calls=self._resolve_max_tool_calls(next_step),
             )
             return BatchImportOutcome(result=parsed, next_request=next_request)
@@ -907,10 +908,9 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=self._with_response_as_tool(
+            model_settings=self._resolve_model_settings(
                 model_settings=self._executor.context.model_settings_json, step=step
             ),
-            tool_choice=self._resolve_tool_choice(step),
             max_tool_calls=self._resolve_max_tool_calls(step),
         )
         output = await self._executor._execute_batch_request(
@@ -953,10 +953,9 @@ class QuickAgent:
             instructions=instructions,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model_settings=self._with_response_as_tool(
+            model_settings=self._resolve_model_settings(
                 model_settings=model_settings, step=None
             ),
-            tool_choice=self._resolve_tool_choice(None),
             max_tool_calls=self._resolve_max_tool_calls(None),
         )
         return await self._executor._execute_batch_request(
@@ -1005,10 +1004,9 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=self._with_response_as_tool(
+            model_settings=self._resolve_model_settings(
                 model_settings=model_settings, step=step
             ),
-            tool_choice=self._resolve_tool_choice(step),
             max_tool_calls=self._resolve_max_tool_calls(step),
         )
         output = await self._executor._execute_batch_request(
@@ -1135,6 +1133,28 @@ class QuickAgent:
         response_as_tool = self._resolve_response_as_tool(step)
         return model_settings.model_copy(update={"response_as_tool": response_as_tool})
 
+    def _with_tool_choice(
+        self,
+        *,
+        model_settings: ModelSettings,
+        step: ChainStepSpec | None,
+    ) -> ModelSettings:
+        tool_choice = self._resolve_tool_choice(step)
+        return model_settings.model_copy(update={"tool_choice": tool_choice})
+
+    def _resolve_model_settings(
+        self,
+        *,
+        model_settings: ModelSettings,
+        step: ChainStepSpec | None,
+    ) -> ModelSettings:
+        return self._with_tool_choice(
+            model_settings=self._with_response_as_tool(
+                model_settings=model_settings, step=step
+            ),
+            step=step,
+        )
+
     def _extract_response_schema(
         self, response_format: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
@@ -1158,24 +1178,8 @@ class QuickAgent:
             schema[str(key)] = value
         return schema
 
-    def _is_bedrock_request(self, *, model_settings: ModelSettings) -> bool:
-        if self.model_spec.provider == "bedrock":
-            return True
-        model_extra_body = model_settings.extra_body
-        if isinstance(model_extra_body, dict):
-            if (
-                "bedrock_request_mode" in model_extra_body
-                or "anthropic_version" in model_extra_body
-            ):
-                return True
-        context_extra_body = self._executor.context.extra_body
-        if isinstance(context_extra_body, dict):
-            if (
-                "bedrock_request_mode" in context_extra_body
-                or "anthropic_version" in context_extra_body
-            ):
-                return True
-        return False
+    def _is_bedrock_request(self) -> bool:
+        return self.model_spec.provider == "bedrock"
 
     def _normalize_tool_choice(
         self, tool_choice: ToolChoice | None
