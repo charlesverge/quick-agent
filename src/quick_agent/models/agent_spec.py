@@ -26,6 +26,7 @@ class AgentSpec(BaseModel):
     nested_output: Literal["inline", "file"] = "inline"
     safe_dir: str | None = None
     tool_choice: ToolChoice | None = None
+    max_tool_calls: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_output_schema_usage(self) -> "AgentSpec":

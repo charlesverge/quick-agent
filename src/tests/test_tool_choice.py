@@ -102,6 +102,46 @@ def test_tool_choice_chain_overrides_agent_and_filters_allowed_tools(
     assert request.tools[0].name == "filesystem_list_files"
 
 
+def test_max_tool_calls_chain_overrides_agent(tmp_path: Path) -> None:
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    step = ChainStepSpec(
+        id="s1",
+        kind="text",
+        prompt_section="step:one",
+        max_tool_calls=5,
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(),
+        chain=[step],
+        tools=["filesystem_list_files"],
+        output=OutputSpec(file=None),
+        max_tool_calls=7,
+    )
+    agent = _make_agent(
+        spec=spec,
+        step_prompts={"step:one": "say hi"},
+        tools_root=tools_root,
+        tmp_path=tmp_path,
+    )
+    request = agent.batch()
+    assert request.max_tool_calls == 5
+
+
+def test_max_tool_calls_default_is_three(tmp_path: Path) -> None:
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(),
+        chain=[],
+        tools=["filesystem_list_files"],
+        output=OutputSpec(file=None),
+    )
+    agent = _make_agent(spec=spec, tools_root=tools_root, tmp_path=tmp_path)
+    request = agent.batch()
+    assert request.max_tool_calls == 3
+
+
 def test_tool_choice_single_shot_uses_agent_level_none(tmp_path: Path) -> None:
     tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
     spec = AgentSpec(
@@ -193,3 +233,42 @@ def test_tool_choice_bedrock_open_weight_any() -> None:
     model_input = line["modelInput"]
     assert isinstance(model_input, dict)
     assert model_input.get("tool_choice") == "required"
+
+
+def test_tool_call_rounds_counts_assistant_tool_call_messages() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-tools",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+        ),
+        messages=[
+            BatchMessage(role="user", content="hello"),
+            BatchMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call1",
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            ),
+            BatchMessage(role="tool", content="ok", tool_call_id="call1", name="t"),
+            BatchMessage(
+                role="assistant",
+                tool_calls=[
+                    {
+                        "id": "call2",
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            ),
+        ],
+    )
+    assert request.tool_call_rounds() == 2

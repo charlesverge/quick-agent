@@ -231,6 +231,12 @@ class AgentExecutor:
         state: dict[str, object] = {}
         for key, value in state_obj.items():
             state[str(key)] = value
+        next_tool_choice = submit_request.tool_choice
+        if (
+            submit_request.tool_choice is not None
+            and submit_request.tool_choice.mode == "required"
+        ):
+            next_tool_choice = None
         return BatchSubmitRequest(
             request_id=f"{self.config.agent_id}-{uuid4()}",
             agent_id=self.config.agent_id,
@@ -240,7 +246,8 @@ class AgentExecutor:
             model=submit_request.model,
             messages=messages,
             response_format=submit_request.response_format,
-            tool_choice=submit_request.tool_choice,
+            tool_choice=next_tool_choice,
+            max_tool_calls=submit_request.max_tool_calls,
             tool_ids=list(self.config.tool_ids),
             tools=submit_request.tools,
             tool_use_enabled=submit_request.tool_use_enabled,
@@ -487,6 +494,12 @@ class AgentExecutor:
             raise ValueError("Model returned an empty response.")
 
         if tool_calls:
+            tool_call_rounds = batch_request.tool_call_rounds()
+            if tool_call_rounds >= batch_request.max_tool_calls:
+                raise ValueError(
+                    f"Max tool call rounds reached for request_id={batch_request.request_id}: "
+                    f"max_tool_calls={batch_request.max_tool_calls}"
+                )
             return BatchImportRequest(
                 request_id=batch_request.request_id,
                 provider_job_id=getattr(response, "id", None),

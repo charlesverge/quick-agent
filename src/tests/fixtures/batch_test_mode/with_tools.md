@@ -8,6 +8,7 @@ model:
   model_name: "gpt-4o"
   temperature: 0.1
   max_completion_tokens: 2048
+max_tool_calls: 8
 tools:
   - "filesystem_read_text"
   - "filesystem_append_text"

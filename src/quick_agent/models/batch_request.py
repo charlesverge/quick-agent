@@ -119,6 +119,7 @@ class BatchSubmitRequest(BaseModel):
     messages: list[BatchMessage]
     response_format: dict[str, JsonValue] | None = None
     tool_choice: ToolChoice | None = None
+    max_tool_calls: int = Field(default=3, ge=1)
     tool_ids: list[str] = Field(default_factory=list)
     tools: list[BatchToolDefinition] | None = None
     tool_use_enabled: bool = False
@@ -237,6 +238,15 @@ class BatchSubmitRequest(BaseModel):
         if mode == "none":
             return "none"
         return None
+
+    def tool_call_rounds(self) -> int:
+        count = 0
+        for message in self.messages:
+            if message.role != "assistant" or message.tool_calls is None:
+                continue
+            if len(message.tool_calls) > 0:
+                count += 1
+        return count
 
     def _build_converse_jsonl_line(self) -> dict[str, object]:
         converse_msgs: list[dict[str, object]] = []

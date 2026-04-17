@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from quick_agent.orchestrator import Orchestrator
-from quick_agent.types import AgentResult
+from quick_agent.types import AgentResult, StepOutput
 
 
 async def _run_agent(
@@ -39,7 +39,9 @@ def _require_ollama(base_url: str) -> None:
             response = client.get(health_url)
             response.raise_for_status()
     except Exception:
-        raise RuntimeError(f"Unable to connect to Ollama at {base_url}. Ensure Ollama is running and the base URL is correct.")
+        raise RuntimeError(
+            f"Unable to connect to Ollama at {base_url}. Ensure Ollama is running and the base URL is correct."
+        )
 
 
 class ContactInfo(BaseModel):
@@ -505,6 +507,7 @@ Then respond with only the returned text value.
 
     output = await orchestrator.run("parent", parent_input)
     assert output
+    assert isinstance(output, dict)
     assert output.get("result") == "pong"
     assert child_output.exists()
 
@@ -536,6 +539,7 @@ model:
   model_name: {model_name}
   temperature: 0.1
   max_completion_tokens: 2048
+max_tool_calls: 8
 tools:
   - "filesystem_list_files"
   - "filesystem_find_closest_file"
@@ -743,14 +747,14 @@ async def test_batch_execute_with_tools_verifies_each_step(
             if next_req.context and next_req.context.state:
                 ctx_state = next_req.context.state
                 steps_value = ctx_state.get("steps")
-                last_output_value = ctx_state.get("last_step_output")
-                steps: dict[str, object] = {}
+                last_output_value: StepOutput | None = ctx_state.get("last_step_output")
+                steps: StepOutput = {}
                 if isinstance(steps_value, dict):
                     steps = steps_value
                 agent.state = {
                     "agent_id": "with_tools",
-                    "steps": steps,  # type: ignore[typeddict-item]
-                    "last_step_output": last_output_value,  # type: ignore[typeddict-item]
+                    "steps": steps,
+                    "last_step_output": last_output_value,
                 }
 
             batch_request = agent.batch()
@@ -802,3 +806,211 @@ async def test_agent_processor_direct_usage(tmp_path: Path) -> None:
     outcome = await agent.import_result(batch_import=import_request)
 
     assert outcome.result is not None
+
+
+@pytest.mark.anyio
+async def test_integration_tool_choice_required_invokes_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4.1-mini"
+    agent_md = f"""---
+name: Tool Choice Required
+model:
+  provider: openai-compatible
+  base_url: {base_url}
+  api_key_env: OPENAI_API_KEY
+  model_name: {model_name}
+  temperature: 0.0
+  max_completion_tokens: 256
+tools:
+  - "filesystem_list_files"
+chain:
+  - id: execute
+    kind: text
+    prompt_section: step:execute
+    tool_choice: required
+output:
+  format: text
+---
+
+## step:execute
+
+Call filesystem_list_files for this directory: {safe_root}.
+Then return exactly the word done.
+"""
+    (agents_dir / "tool_choice_required.md").write_text(agent_md, encoding="utf-8")
+    input_path = safe_root / "input.txt"
+    input_path.write_text("run", encoding="utf-8")
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+    from quick_agent import QuickAgent
+    from quick_agent.executor import ToolCallResult
+
+    tool_call_log: list[dict[str, object]] = []
+
+    async def mock_execute_tool_calls(
+        self, tool_calls: list[dict[str, object]]
+    ) -> list[ToolCallResult]:
+        tool_call_log.extend(tool_calls)
+        results = []
+        for tc in tool_calls:
+            tc_id = str(tc.get("id", ""))
+            tc_name = str(tc.get("name", ""))
+            results.append(ToolCallResult(id=tc_id, name=tc_name, content="ok"))
+        return results
+
+    import quick_agent.executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module.AgentExecutor,
+        "_execute_tool_calls",
+        mock_execute_tool_calls,
+    )
+    agent = QuickAgent(
+        registry=orchestrator.registry,
+        tools=orchestrator.tools,
+        directory_permissions=orchestrator.directory_permissions,
+        agent_id="tool_choice_required",
+        input_data=input_path,
+        test_mode=True,
+    )
+    processor = agent.processor
+    assert processor
+    batch_request = agent.batch()
+    import_request = await processor.run_batch(batch_request)
+    outcome = await agent.import_result(batch_import=import_request)
+    while outcome.next_request is not None:
+        next_req = outcome.next_request
+        import_request = await processor.run_batch(next_req)
+        outcome = await agent.import_result(batch_import=import_request)
+    assert len(tool_call_log) > 0
+    assert any(tc.get("name") == "filesystem_list_files" for tc in tool_call_log)
+
+
+@pytest.mark.anyio
+async def test_integration_tool_choice_none_blocks_tool_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _require_env("OPENAI_API_KEY")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4.1-mini"
+    agent_md = f"""---
+name: Tool Choice None
+model:
+  provider: openai-compatible
+  base_url: {base_url}
+  api_key_env: OPENAI_API_KEY
+  model_name: {model_name}
+  temperature: 0.0
+  max_completion_tokens: 256
+tools:
+  - "filesystem_list_files"
+chain:
+  - id: execute
+    kind: text
+    prompt_section: step:execute
+    tool_choice: none
+output:
+  format: text
+---
+
+## step:execute
+
+Do not call any tool.
+Return exactly the word done.
+"""
+    (agents_dir / "tool_choice_none.md").write_text(agent_md, encoding="utf-8")
+    input_path = safe_root / "input.txt"
+    input_path.write_text("run", encoding="utf-8")
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+    from quick_agent import QuickAgent
+    from quick_agent.executor import ToolCallResult
+
+    tool_call_log: list[dict[str, object]] = []
+
+    async def mock_execute_tool_calls(
+        self, tool_calls: list[dict[str, object]]
+    ) -> list[ToolCallResult]:
+        tool_call_log.extend(tool_calls)
+        return []
+
+    import quick_agent.executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module.AgentExecutor,
+        "_execute_tool_calls",
+        mock_execute_tool_calls,
+    )
+    agent = QuickAgent(
+        registry=orchestrator.registry,
+        tools=orchestrator.tools,
+        directory_permissions=orchestrator.directory_permissions,
+        agent_id="tool_choice_none",
+        input_data=input_path,
+        test_mode=True,
+    )
+    processor = agent.processor
+    assert processor
+    batch_request = agent.batch()
+    import_request = await processor.run_batch(batch_request)
+    outcome = await agent.import_result(batch_import=import_request)
+    assert outcome.result is not None
+    assert len(tool_call_log) == 0
+
+
+def test_integration_tool_choice_any_normalizes_to_auto_for_non_bedrock(
+    tmp_path: Path,
+) -> None:
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir(parents=True, exist_ok=True)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    model_name = os.environ.get("OPENAI_MODEL") or "gpt-4.1-mini"
+    agent_md = f"""---
+name: Tool Choice Any
+model:
+  provider: openai-compatible
+  base_url: {base_url}
+  api_key_env: OPENAI_API_KEY
+  model_name: {model_name}
+tools:
+  - "filesystem_list_files"
+chain:
+  - id: execute
+    kind: text
+    prompt_section: step:execute
+    tool_choice: any
+output:
+  format: text
+---
+
+## step:execute
+
+Return done.
+"""
+    (agents_dir / "tool_choice_any.md").write_text(agent_md, encoding="utf-8")
+    input_path = safe_root / "input.txt"
+    input_path.write_text("run", encoding="utf-8")
+    import quick_agent.tools as _tools_pkg
+
+    system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
+    orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
+    batch_request = anyio.run(orchestrator.batch, "tool_choice_any", input_path)
+    assert batch_request.tool_choice is not None
+    assert batch_request.tool_choice.mode == "auto"

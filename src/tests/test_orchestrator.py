@@ -42,6 +42,7 @@ from quick_agent.models.content_processing_spec import (
     ContentProcessingSpec,
     SampleSpec,
 )
+from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.model_spec import ModelSettings
 from quick_agent.models.output_spec import OutputSpec
@@ -536,7 +537,6 @@ def test_build_model_settings_includes_extra_body() -> None:
     extra_body = settings.extra_body
     assert isinstance(extra_body, dict)
     assert extra_body == {}
-
 
     qa = _make_quick_agent_for_test()
     spec = ModelSpec(
@@ -3358,6 +3358,60 @@ def test_build_next_request_with_tool_results_extends_messages() -> None:
     assert tool_msg.role == "tool"
     assert tool_msg.content == "result text"
     assert tool_msg.tool_call_id == "call1"
+
+
+def test_build_next_request_with_tool_results_clears_tool_choice() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system",
+        user_prompt="user prompt",
+        model_settings=None,
+    )
+    submit_request = submit_request.model_copy(
+        update={"tool_choice": ToolChoice(mode="required")}
+    )
+    tool_calls: list[dict[str, object]] = [
+        {"id": "call1", "name": "tool_name", "arguments": {"x": 1}}
+    ]
+    executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
+    next_req = qa._executor._build_next_request_with_tool_results(
+        tool_calls=tool_calls,
+        executed=executed,
+        submit_request=submit_request,
+    )
+    assert next_req.tool_choice is None
+
+
+def test_build_next_request_with_tool_results_keeps_non_required_tool_choice() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="do thing",
+        system_prompt="system",
+        user_prompt="user prompt",
+        model_settings=None,
+    )
+    submit_request = submit_request.model_copy(
+        update={"tool_choice": ToolChoice(mode="none"), "max_tool_calls": 5}
+    )
+    tool_calls: list[dict[str, object]] = [
+        {"id": "call1", "name": "tool_name", "arguments": {"x": 1}}
+    ]
+    executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
+    next_req = qa._executor._build_next_request_with_tool_results(
+        tool_calls=tool_calls,
+        executed=executed,
+        submit_request=submit_request,
+    )
+    assert next_req.tool_choice is not None
+    assert next_req.tool_choice.mode == "none"
+    assert next_req.max_tool_calls == 5
 
 
 def test_build_converse_jsonl_line_with_tool_calls() -> None:

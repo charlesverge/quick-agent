@@ -451,6 +451,7 @@ class QuickAgent:
         user_prompt: str,
         model_settings: ModelSettings | None,
         tool_choice: ToolChoice | None = None,
+        max_tool_calls: int = 3,
     ) -> BatchSubmitRequest:
         response_format: dict[str, JsonValue] | None = None
         if model_settings is not None:
@@ -509,6 +510,7 @@ class QuickAgent:
             ),
             response_format=response_format,
             tool_choice=resolved_tool_choice,
+            max_tool_calls=max_tool_calls,
             tool_ids=list(self.tool_ids),
             tools=tools or None,
             tool_use_enabled=bool(tools),
@@ -542,6 +544,7 @@ class QuickAgent:
                     schema_cls=schema_cls
                 )
             tool_choice = self._resolve_tool_choice(step)
+            max_tool_calls = self._resolve_max_tool_calls(step)
             return self.create_batch_request_for_current_step(
                 step_id=step.id,
                 step_kind=step.kind,
@@ -551,6 +554,7 @@ class QuickAgent:
                 user_prompt=make_user_prompt(self.run_input, self.state),
                 model_settings=model_settings,
                 tool_choice=tool_choice,
+                max_tool_calls=max_tool_calls,
             )
 
         single_schema = self.loaded.spec.output.output_schema
@@ -569,6 +573,7 @@ class QuickAgent:
             user_prompt=self._build_single_shot_prompt(),
             model_settings=model_settings,
             tool_choice=self._resolve_tool_choice(None),
+            max_tool_calls=self._resolve_max_tool_calls(None),
         )
 
     async def import_result(
@@ -672,6 +677,8 @@ class QuickAgent:
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
                 model_settings=next_model_settings,
+                tool_choice=self._resolve_tool_choice(next_step),
+                max_tool_calls=self._resolve_max_tool_calls(next_step),
             )
             return BatchImportOutcome(result=parsed, next_request=next_request)
         final_result: AgentResult
@@ -863,6 +870,8 @@ class QuickAgent:
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
             model_settings=self._executor.context.model_settings_json,
+            tool_choice=self._resolve_tool_choice(step),
+            max_tool_calls=self._resolve_max_tool_calls(step),
         )
         output = await self._executor._execute_batch_request(
             batch_request=batch_request,
@@ -905,6 +914,8 @@ class QuickAgent:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model_settings=model_settings,
+            tool_choice=self._resolve_tool_choice(None),
+            max_tool_calls=self._resolve_max_tool_calls(None),
         )
         return await self._executor._execute_batch_request(
             batch_request=batch_request,
@@ -953,6 +964,8 @@ class QuickAgent:
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
             model_settings=model_settings,
+            tool_choice=self._resolve_tool_choice(step),
+            max_tool_calls=self._resolve_max_tool_calls(step),
         )
         output = await self._executor._execute_batch_request(
             batch_request=batch_request,
@@ -1068,6 +1081,13 @@ class QuickAgent:
         if tool_choice.mode == "any" and self.model_spec.provider != "bedrock":
             return tool_choice.model_copy(update={"mode": "auto"})
         return tool_choice
+
+    def _resolve_max_tool_calls(self, step: ChainStepSpec | None) -> int:
+        if step is not None and step.max_tool_calls is not None:
+            return step.max_tool_calls
+        if self.loaded.spec.max_tool_calls is not None:
+            return self.loaded.spec.max_tool_calls
+        return 3
 
     def _toolsets_for_run(self) -> list[AgentToolset]:
         if not self.has_tools():
