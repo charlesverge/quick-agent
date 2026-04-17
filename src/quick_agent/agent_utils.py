@@ -141,10 +141,22 @@ def _normalize_openai(tc: dict[str, object]) -> dict[str, object] | None:
     }
 
 
+def _normalize_final_result(tc: dict[str, object]) -> dict[str, object]:
+    if tc.get("name") != "final_result":
+        return tc
+    args = tc.get("arguments")
+    if isinstance(args, str):
+        try:
+            tc["arguments"] = json.loads(args)
+        except json.JSONDecodeError:
+            tc["arguments"] = args
+    return tc
+
+
 def normalize_tool_calls(raw: list[dict[str, object]]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for tc in raw:
         normalized = _normalize_anthropic(tc) or _normalize_converse(tc) or _normalize_openai(tc)
         if normalized is not None:
-            result.append(normalized)
+            result.append(_normalize_final_result(normalized))
     return result
