@@ -21,6 +21,7 @@ class BatchToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, JsonValue]
+    strict: bool = True
 
 
 class BatchMessage(BaseModel):
@@ -123,6 +124,8 @@ class BatchSubmitRequest(BaseModel):
     tool_ids: list[str] = Field(default_factory=list)
     tools: list[BatchToolDefinition] | None = None
     tool_use_enabled: bool = False
+    response_as_tool: bool = False
+    final_result_tool_enabled: bool = False
     bedrock_model_id: str | None = None
     context: BatchAgentContext = Field(default_factory=BatchAgentContext)
 
@@ -350,6 +353,7 @@ class BatchSubmitRequest(BaseModel):
                             "name": tool_def.name,
                             "description": tool_def.description,
                             "inputSchema": {"json": tool_def.input_schema},
+                            "strict": tool_def.strict,
                         }
                     }
                 )
@@ -435,6 +439,7 @@ class BatchSubmitRequest(BaseModel):
                             "name": tool_def.name,
                             "description": tool_def.description,
                             "parameters": tool_def.input_schema,
+                            "strict": tool_def.strict,
                         },
                     }
                 )
@@ -544,6 +549,9 @@ class BatchSubmitRequest(BaseModel):
                             "input_schema": func_def.get("parameters")
                             if isinstance(func_def, dict)
                             else {},
+                            "strict": func_def.get("strict")
+                            if isinstance(func_def, dict)
+                            else False,
                         }
                     )
             model_input_obj["tools"] = anthropic_tools

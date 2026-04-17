@@ -4,8 +4,41 @@ resource "aws_iam_user" "deployer" {
   name = var.deployer_user_name
 }
 
+resource "aws_iam_user" "bedrock_console" {
+  name = "${var.deployer_user_name}-console"
+}
+
+resource "aws_iam_user_login_profile" "bedrock_console" {
+  user                    = aws_iam_user.bedrock_console.name
+  password_length         = 20
+  password_reset_required = true
+}
+
 resource "aws_iam_access_key" "deployer" {
   user = aws_iam_user.deployer.name
+}
+
+resource "aws_iam_user_policy" "bedrock_console" {
+  name = "${aws_iam_user.bedrock_console.name}-bedrock-batch-view"
+  user = aws_iam_user.bedrock_console.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "BedrockBatchJobReadOnly"
+        Effect   = "Allow"
+        Action   = ["bedrock:GetModelInvocationJob", "bedrock:ListModelInvocationJobs", "bedrock:GetFoundationModel", "bedrock:ListFoundationModels", "bedrock:GetInferenceProfile", "bedrock:ListInferenceProfiles", "bedrock:GetApplicationInferenceProfile", "bedrock:ListApplicationInferenceProfiles", "bedrock:ListTagsForResource"]
+        Resource = "*"
+      },
+      {
+        Sid      = "S3BucketReadOnlyForHarness"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetObject"]
+        Resource = ["arn:aws:s3:::${var.bucket_name_prefix}-*", "arn:aws:s3:::${var.bucket_name_prefix}-*/*"]
+      }
+    ]
+  })
 }
 
 resource "aws_iam_user_policy" "deployer" {

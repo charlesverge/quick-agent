@@ -2870,7 +2870,7 @@ def test_create_batch_request_includes_tool_definitions() -> None:
         instructions=None,
         system_prompt="sys",
         user_prompt="input",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
 
     assert request.tool_use_enabled is True
@@ -2919,6 +2919,41 @@ def test_batch_submit_converse_jsonl_includes_tool_config() -> None:
     assert len(tools) == 1
     assert isinstance(tools[0], dict)
     assert tools[0]["toolSpec"]["name"] == "filesystem_list_files"
+
+
+def test_batch_submit_converse_jsonl_includes_tool_strict_flag() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-tools-strict",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="filesystem_list_files",
+                description="List files",
+                input_schema={"type": "object", "properties": {}},
+                strict=True,
+            )
+        ],
+        tool_use_enabled=True,
+    )
+
+    line = request.jsonl_line
+    model_input = line["modelInput"]
+    assert isinstance(model_input, dict)
+    tool_config = model_input.get("toolConfig")
+    assert isinstance(tool_config, dict)
+    tools_obj = tool_config.get("tools")
+    assert isinstance(tools_obj, list)
+    assert isinstance(tools_obj[0], dict)
+    assert tools_obj[0]["toolSpec"]["strict"] is True
 
 
 def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> None:
@@ -3098,6 +3133,346 @@ def test_batch_structured_step_includes_response_format_for_non_openai() -> None
     assert request.response_format["type"] == "json_schema"
 
 
+def test_create_batch_request_bedrock_structured_tools_response_as_tool_true_uses_final_result() -> (
+    None
+):
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(provider="bedrock", base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="structured",
+        output_schema="Out",
+        instructions="system",
+        system_prompt="",
+        user_prompt="input",
+        model_settings=qa._executor.context.build_structured_model_settings(
+            schema_cls=ExampleSchema
+        ).model_copy(update={"response_as_tool": True}),
+    )
+
+    assert request.response_format is None
+    assert request.final_result_tool_enabled is True
+    assert request.tools is not None
+    names = [tool.name for tool in request.tools]
+    assert "filesystem_list_files" in names
+    assert "final_result" in names
+    strict_flags = [tool.strict for tool in request.tools]
+    assert all(strict_flags)
+
+
+def test_create_batch_request_bedrock_structured_tools_response_as_tool_false_raises() -> (
+    None
+):
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(provider="bedrock", base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    with pytest.raises(ValueError, match="response_as_tool=true"):
+        qa.create_batch_request_for_current_step(
+            step_id="s1",
+            step_kind="structured",
+            output_schema="Out",
+            instructions="system",
+            system_prompt="",
+            user_prompt="input",
+            model_settings=qa._executor.context.build_structured_model_settings(
+                schema_cls=ExampleSchema
+            ).model_copy(update={"response_as_tool": False}),
+        )
+
+
+def test_create_batch_request_non_bedrock_structured_tools_response_as_tool_true_uses_final_result() -> (
+    None
+):
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="structured",
+        output_schema="Out",
+        instructions="system",
+        system_prompt="",
+        user_prompt="input",
+        model_settings=qa._executor.context.build_structured_model_settings(
+            schema_cls=ExampleSchema
+        ).model_copy(update={"response_as_tool": True}),
+    )
+
+    assert request.response_format is None
+    assert request.final_result_tool_enabled is True
+    assert request.tools is not None
+    names = [tool.name for tool in request.tools]
+    assert "final_result" in names
+
+
+def test_create_batch_request_non_bedrock_structured_tools_response_as_tool_false_keeps_response_format() -> (
+    None
+):
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="structured",
+        output_schema="Out",
+        instructions="system",
+        system_prompt="",
+        user_prompt="input",
+        model_settings=qa._executor.context.build_structured_model_settings(
+            schema_cls=ExampleSchema
+        ).model_copy(update={"response_as_tool": False}),
+    )
+
+    assert request.response_format is not None
+    assert request.final_result_tool_enabled is False
+    assert request.tools is not None
+    names = [tool.name for tool in request.tools]
+    assert "final_result" not in names
+
+
+def test_batch_uses_chain_response_as_tool_override() -> None:
+    step = ChainStepSpec(
+        id="s1",
+        kind="structured",
+        prompt_section="step:one",
+        output_schema="Out",
+        response_as_tool=True,
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+        response_as_tool=False,
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.batch()
+    assert request.response_as_tool is True
+    assert request.final_result_tool_enabled is True
+
+
+@pytest.mark.parametrize("response_as_tool", [True, False])
+def test_create_batch_request_bedrock_structured_no_tools_preserves_response_format(
+    response_as_tool: bool,
+) -> None:
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(provider="bedrock", base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+        response_as_tool=response_as_tool,
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded)
+
+    request = qa.batch()
+    assert request.response_format is not None
+    assert request.final_result_tool_enabled is False
+    assert request.tools is None
+
+
+@pytest.mark.parametrize("response_as_tool", [True, False])
+def test_create_batch_request_bedrock_no_structured_with_tools_preserves_tool_behavior(
+    response_as_tool: bool,
+) -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(provider="bedrock", base_url="http://x", model_name="m"),
+        chain=[ChainStepSpec(id="s1", kind="text", prompt_section="step:one")],
+        response_as_tool=response_as_tool,
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="system",
+        system_prompt="",
+        user_prompt="input",
+        model_settings=qa._executor.context.model_settings_json.model_copy(
+            update={"response_as_tool": response_as_tool}
+        ),
+    )
+    assert request.response_format is None
+    assert request.final_result_tool_enabled is False
+    assert request.tool_use_enabled is True
+    assert request.tools is not None
+    names = [tool.name for tool in request.tools]
+    assert "final_result" not in names
+
+
+@pytest.mark.parametrize("response_as_tool", [True, False])
+def test_create_batch_request_non_bedrock_structured_no_tools_preserves_response_format(
+    response_as_tool: bool,
+) -> None:
+    step = ChainStepSpec(
+        id="s1", kind="structured", prompt_section="step:one", output_schema="Out"
+    )
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[step],
+        schemas={"Out": f"{__name__}:ExampleSchema"},
+        output=OutputSpec(file=None),
+        response_as_tool=response_as_tool,
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded)
+
+    request = qa.batch()
+    assert request.response_format is not None
+    assert request.final_result_tool_enabled is False
+    assert request.tools is None
+
+
+@pytest.mark.parametrize("response_as_tool", [True, False])
+def test_create_batch_request_non_bedrock_no_structured_with_tools_preserves_tool_behavior(
+    response_as_tool: bool,
+) -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[ChainStepSpec(id="s1", kind="text", prompt_section="step:one")],
+        response_as_tool=response_as_tool,
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="system",
+        system_prompt="",
+        step_prompts={"step:one": "do thing"},
+    )
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test(loaded=loaded)
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id="s1",
+        step_kind="text",
+        output_schema=None,
+        instructions="system",
+        system_prompt="",
+        user_prompt="input",
+        model_settings=qa._executor.context.model_settings_json.model_copy(
+            update={"response_as_tool": response_as_tool}
+        ),
+    )
+    assert request.response_format is None
+    assert request.final_result_tool_enabled is False
+    assert request.tool_use_enabled is True
+    assert request.tools is not None
+    names = [tool.name for tool in request.tools]
+    assert "final_result" not in names
+
+
 @pytest.mark.anyio
 async def test_apply_imported_batch_result_returns_next_request() -> None:
     qa = _make_quick_agent_for_test()
@@ -3246,7 +3621,7 @@ def test_import_outcome_handles_tool_use_state() -> None:
         instructions="do thing",
         system_prompt="system",
         user_prompt="user prompt",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
     batch_import = BatchImportRequest(
         request_id="r1",
@@ -3269,6 +3644,114 @@ def test_import_outcome_handles_tool_use_state() -> None:
     assert outcome.pending_submit_request is not None
 
 
+def test_import_outcome_maps_final_result_tool_call_to_completed_result() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = BatchSubmitRequest(
+        request_id="r-final",
+        agent_id="a",
+        step_id="s1",
+        step_kind="structured",
+        output_schema="Out",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="final_result",
+                description="final",
+                input_schema={
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                },
+                strict=True,
+            )
+        ],
+        tool_use_enabled=True,
+        response_as_tool=True,
+        final_result_tool_enabled=True,
+    )
+    batch_import = BatchImportRequest(
+        request_id="r-final",
+        payload={
+            "state": "tool_use",
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "name": "final_result",
+                    "arguments": {"x": 11},
+                }
+            ],
+            "submit_request": submit_request.model_dump(mode="json"),
+        },
+    )
+    outcome = qa._executor.import_outcome(batch_import=batch_import)
+    assert outcome.result == {"x": 11}
+    assert outcome.tool_calls is None
+
+
+def test_import_outcome_non_matching_final_result_contract_keeps_tool_loop() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = BatchSubmitRequest(
+        request_id="r-tool-loop",
+        agent_id="a",
+        step_id="s1",
+        step_kind="structured",
+        output_schema="Out",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="final_result",
+                description="final",
+                input_schema={
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                },
+                strict=True,
+            ),
+            BatchToolDefinition(
+                name="filesystem_list_files",
+                description="List files",
+                input_schema={
+                    "type": "object",
+                    "properties": {"directory": {"type": "string"}},
+                },
+                strict=True,
+            ),
+        ],
+        tool_use_enabled=True,
+        response_as_tool=True,
+        final_result_tool_enabled=True,
+    )
+    batch_import = BatchImportRequest(
+        request_id="r-tool-loop",
+        payload={
+            "state": "tool_use",
+            "tool_calls": [
+                {
+                    "id": "call1",
+                    "name": "filesystem_list_files",
+                    "arguments": {"directory": "."},
+                }
+            ],
+            "submit_request": submit_request.model_dump(mode="json"),
+        },
+    )
+    outcome = qa._executor.import_outcome(batch_import=batch_import)
+    assert outcome.result is None
+    assert outcome.tool_calls is not None
+    assert outcome.pending_submit_request is not None
+
+
 def test_import_outcome_tool_use_missing_tool_calls_raises() -> None:
     qa = _make_quick_agent_for_test()
     batch_import = BatchImportRequest(
@@ -3288,7 +3771,7 @@ def test_import_outcome_handles_openai_gpt_5_2_tool_call_format() -> None:
         instructions="summarize",
         system_prompt="system",
         user_prompt="user prompt",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
     batch_import = BatchImportRequest(
         request_id="r1",
@@ -3339,7 +3822,7 @@ def test_build_next_request_with_tool_results_extends_messages() -> None:
         instructions="do thing",
         system_prompt="system",
         user_prompt="user prompt",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
     tool_calls: list[dict[str, object]] = [
         {"id": "call1", "name": "tool_name", "arguments": {"x": 1}}
@@ -3369,7 +3852,7 @@ def test_build_next_request_with_tool_results_clears_tool_choice() -> None:
         instructions="do thing",
         system_prompt="system",
         user_prompt="user prompt",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
     submit_request = submit_request.model_copy(
         update={"tool_choice": ToolChoice(mode="required")}
@@ -3395,7 +3878,7 @@ def test_build_next_request_with_tool_results_keeps_non_required_tool_choice() -
         instructions="do thing",
         system_prompt="system",
         user_prompt="user prompt",
-        model_settings=None,
+        model_settings=qa._executor.context.model_settings_json,
     )
     submit_request = submit_request.model_copy(
         update={"tool_choice": ToolChoice(mode="none"), "max_tool_calls": 5}

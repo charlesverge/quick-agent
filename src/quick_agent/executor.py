@@ -251,6 +251,8 @@ class AgentExecutor:
             tool_ids=list(self.config.tool_ids),
             tools=submit_request.tools,
             tool_use_enabled=submit_request.tool_use_enabled,
+            response_as_tool=submit_request.response_as_tool,
+            final_result_tool_enabled=submit_request.final_result_tool_enabled,
             bedrock_model_id=submit_request.bedrock_model_id,
             context=BatchAgentContext(
                 input_text=self.config.run_input.text,
@@ -323,11 +325,39 @@ class AgentExecutor:
                 pending_submit_request = BatchSubmitRequest.model_validate(
                     submit_request_obj
                 )
+            final_result_output = self._extract_final_result_tool_output(
+                tool_calls=tool_calls,
+                pending_submit_request=pending_submit_request,
+            )
+            if final_result_output is not None:
+                return BatchImportOutcome(result=_as_agent_result(final_result_output))
             return BatchImportOutcome(
                 tool_calls=tool_calls,
                 pending_submit_request=pending_submit_request,
             )
         raise ValueError(f"Unsupported batch import state: {state_obj}")
+
+    def _extract_final_result_tool_output(
+        self,
+        *,
+        tool_calls: list[dict[str, object]],
+        pending_submit_request: BatchSubmitRequest | None,
+    ) -> object | None:
+        if pending_submit_request is None:
+            return None
+        if not pending_submit_request.final_result_tool_enabled:
+            return None
+        if len(tool_calls) != 1:
+            return None
+        tool_call = tool_calls[0]
+        tool_name = tool_call.get("name")
+        if tool_name != "final_result":
+            return None
+        if "arguments" not in tool_call:
+            raise ValueError(
+                "final_result tool contract expects tool call arguments payload."
+            )
+        return tool_call["arguments"]
 
     def _map_model_error_message(self, message: str) -> QuickAgentException | None:
         if "does not support tools" in message:

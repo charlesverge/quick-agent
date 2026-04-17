@@ -199,3 +199,31 @@ tool_choice:
 ```
 
 This is payload-only enforcement: only listed tools are sent to the model for that request.
+
+## Structured Output As Tool
+
+`response_as_tool` controls whether structured output is emitted through a synthetic tool call
+instead of `response_format` when structured output and tools are both present.
+
+- agent default: `AgentSpec.response_as_tool = false`
+- chain override: `ChainStepSpec.response_as_tool` (when set) takes precedence over agent value
+- synthetic tool name: `final_result` (reserved)
+
+### Behavior
+
+- `response_as_tool=true` with structured output + tools:
+  - synthetic `final_result` tool is injected with the structured schema
+  - `response_format` is omitted for that request
+- Bedrock strictness:
+  - all Bedrock tool definitions are serialized with `strict: true`
+- Bedrock configuration error:
+  - if structured output + tools coexist and `response_as_tool=false`, request building raises
+    a configuration error requiring `response_as_tool=true`
+
+### Batch Harness Verification
+
+`deploy/bedrock-batch-test-harness/verify.py` validates the same contract:
+
+- `response_as_tool=true` + structured output + tools must include `final_result` and omit
+  `response_format`
+- Bedrock rows with structured output + tools and `response_as_tool=false` are treated as invalid

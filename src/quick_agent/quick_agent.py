@@ -449,17 +449,19 @@ class QuickAgent:
         instructions: str | None,
         system_prompt: str | list[str],
         user_prompt: str,
-        model_settings: ModelSettings | None,
+        model_settings: ModelSettings,
         tool_choice: ToolChoice | None = None,
         max_tool_calls: int = 3,
     ) -> BatchSubmitRequest:
+        response_as_tool = False
+        if isinstance(model_settings.response_as_tool, bool):
+            response_as_tool = model_settings.response_as_tool
         response_format: dict[str, JsonValue] | None = None
-        if model_settings is not None:
-            extra_body_obj = model_settings.extra_body
-            if isinstance(extra_body_obj, dict):
-                response_format_obj = extra_body_obj.get("response_format")
-                if isinstance(response_format_obj, dict):
-                    response_format = response_format_obj
+        extra_body_obj = model_settings.extra_body
+        if isinstance(extra_body_obj, dict):
+            response_format_obj = extra_body_obj.get("response_format")
+            if isinstance(response_format_obj, dict):
+                response_format = response_format_obj
         if response_format is None and output_schema is not None:
             schema_cls = resolve_schema(self.loaded, output_schema)
             schema = schema_cls.model_json_schema()
@@ -488,6 +490,34 @@ class QuickAgent:
             elif resolved_tool_choice.allowed_tools is not None:
                 allowed_names = {ref.name for ref in resolved_tool_choice.allowed_tools}
                 tools = [tool for tool in tools if tool.name in allowed_names]
+        final_result_tool_enabled = False
+        if response_format is not None and tools:
+            if response_as_tool:
+                response_schema = self._extract_response_schema(response_format)
+                if any(tool.name == "final_result" for tool in tools):
+                    raise ValueError(
+                        "Configuration error: tool name 'final_result' is reserved when response_as_tool=true."
+                    )
+                tools.append(
+                    BatchToolDefinition(
+                        name="final_result",
+                        description="Return the final structured response.",
+                        input_schema=response_schema,
+                        strict=True,
+                    )
+                )
+                response_format = None
+                final_result_tool_enabled = True
+            elif self._is_bedrock_request(model_settings=model_settings):
+                raise ValueError(
+                    "Configuration error: Bedrock requests cannot use response_format and tools together. "
+                    "Set response_as_tool=true at the agent or step level."
+                )
+        if self._is_bedrock_request(model_settings=model_settings):
+            strict_tools: list[BatchToolDefinition] = []
+            for tool in tools:
+                strict_tools.append(tool.model_copy(update={"strict": True}))
+            tools = strict_tools
         return BatchSubmitRequest(
             request_id=request_id,
             agent_id=self._executor.config.agent_id,
@@ -514,6 +544,8 @@ class QuickAgent:
             tool_ids=list(self.tool_ids),
             tools=tools or None,
             tool_use_enabled=bool(tools),
+            response_as_tool=response_as_tool,
+            final_result_tool_enabled=final_result_tool_enabled,
             context=BatchAgentContext(
                 input_text=self.run_input.text,
                 state=state,
@@ -552,7 +584,9 @@ class QuickAgent:
                 instructions=step_instructions,
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
-                model_settings=model_settings,
+                model_settings=self._with_response_as_tool(
+                    model_settings=model_settings, step=step
+                ),
                 tool_choice=tool_choice,
                 max_tool_calls=max_tool_calls,
             )
@@ -571,7 +605,9 @@ class QuickAgent:
             instructions=self.loaded.instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=self._build_single_shot_prompt(),
-            model_settings=model_settings,
+            model_settings=self._with_response_as_tool(
+                model_settings=model_settings, step=None
+            ),
             tool_choice=self._resolve_tool_choice(None),
             max_tool_calls=self._resolve_max_tool_calls(None),
         )
@@ -676,7 +712,9 @@ class QuickAgent:
                 instructions=next_instructions,
                 system_prompt=self.loaded.system_prompt,
                 user_prompt=make_user_prompt(self.run_input, self.state),
-                model_settings=next_model_settings,
+                model_settings=self._with_response_as_tool(
+                    model_settings=next_model_settings, step=next_step
+                ),
                 tool_choice=self._resolve_tool_choice(next_step),
                 max_tool_calls=self._resolve_max_tool_calls(next_step),
             )
@@ -824,7 +862,7 @@ class QuickAgent:
         instructions: str | None,
         system_prompt: str | list[str],
         user_prompt: str,
-        model_settings: ModelSettings | None,
+        model_settings: ModelSettings,
     ) -> dict[str, object]:
         context: dict[str, object] = {
             "base_url": self._executor.context.effective_base_url,
@@ -869,7 +907,9 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=self._executor.context.model_settings_json,
+            model_settings=self._with_response_as_tool(
+                model_settings=self._executor.context.model_settings_json, step=step
+            ),
             tool_choice=self._resolve_tool_choice(step),
             max_tool_calls=self._resolve_max_tool_calls(step),
         )
@@ -913,7 +953,9 @@ class QuickAgent:
             instructions=instructions,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model_settings=model_settings,
+            model_settings=self._with_response_as_tool(
+                model_settings=model_settings, step=None
+            ),
             tool_choice=self._resolve_tool_choice(None),
             max_tool_calls=self._resolve_max_tool_calls(None),
         )
@@ -963,7 +1005,9 @@ class QuickAgent:
             instructions=step_instructions,
             system_prompt=self.loaded.system_prompt,
             user_prompt=user_prompt,
-            model_settings=model_settings,
+            model_settings=self._with_response_as_tool(
+                model_settings=model_settings, step=step
+            ),
             tool_choice=self._resolve_tool_choice(step),
             max_tool_calls=self._resolve_max_tool_calls(step),
         )
@@ -1066,12 +1110,72 @@ class QuickAgent:
         tool_ids = [t for t in self.tool_ids if t != "agent_call"]
         if not tool_ids or not self._tools._tool_roots:
             return []
-        return load_tool_definitions(self._tools._tool_roots, tool_ids)
+        tools = load_tool_definitions(self._tools._tool_roots, tool_ids)
+        normalized: list[BatchToolDefinition] = []
+        for tool in tools:
+            normalized.append(tool.model_copy(update={"strict": False}))
+        return normalized
 
     def _resolve_tool_choice(self, step: ChainStepSpec | None) -> ToolChoice | None:
         if step is not None and step.tool_choice is not None:
             return step.tool_choice
         return self.loaded.spec.tool_choice
+
+    def _resolve_response_as_tool(self, step: ChainStepSpec | None) -> bool:
+        if step is not None and step.response_as_tool is not None:
+            return step.response_as_tool
+        return self.loaded.spec.response_as_tool
+
+    def _with_response_as_tool(
+        self,
+        *,
+        model_settings: ModelSettings,
+        step: ChainStepSpec | None,
+    ) -> ModelSettings:
+        response_as_tool = self._resolve_response_as_tool(step)
+        return model_settings.model_copy(update={"response_as_tool": response_as_tool})
+
+    def _extract_response_schema(
+        self, response_format: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        response_type = response_format.get("type")
+        if response_type != "json_schema":
+            raise ValueError(
+                "Configuration error: response_as_tool requires response_format.type='json_schema'."
+            )
+        json_schema_obj = response_format.get("json_schema")
+        if not isinstance(json_schema_obj, dict):
+            raise ValueError(
+                "Configuration error: response_as_tool requires response_format.json_schema."
+            )
+        schema_obj = json_schema_obj.get("schema")
+        if not isinstance(schema_obj, dict):
+            raise ValueError(
+                "Configuration error: response_as_tool requires response_format.json_schema.schema."
+            )
+        schema: dict[str, JsonValue] = {}
+        for key, value in schema_obj.items():
+            schema[str(key)] = value
+        return schema
+
+    def _is_bedrock_request(self, *, model_settings: ModelSettings) -> bool:
+        if self.model_spec.provider == "bedrock":
+            return True
+        model_extra_body = model_settings.extra_body
+        if isinstance(model_extra_body, dict):
+            if (
+                "bedrock_request_mode" in model_extra_body
+                or "anthropic_version" in model_extra_body
+            ):
+                return True
+        context_extra_body = self._executor.context.extra_body
+        if isinstance(context_extra_body, dict):
+            if (
+                "bedrock_request_mode" in context_extra_body
+                or "anthropic_version" in context_extra_body
+            ):
+                return True
+        return False
 
     def _normalize_tool_choice(
         self, tool_choice: ToolChoice | None

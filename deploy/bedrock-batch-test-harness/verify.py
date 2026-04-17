@@ -15,6 +15,7 @@ from settings import HarnessSettings
 from verify_csv import RequestTracker, export_csv_by_agent, export_summary_csv
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 REQUIRED_LANGUAGES = {"python", "typescript"}
 REQUIRED_DATABASES = {"mongodb", "sql"}
@@ -329,6 +330,46 @@ def _validate_submit_rows(
                 raise ValueError(
                     f"{context}: expected submit row index={settings.tool_choice_index} step_id={settings.tool_choice_required_step_id}, got {step_id}"
                 )
+        response_as_tool_obj = row.get("response_as_tool")
+        response_as_tool = (
+            response_as_tool_obj if isinstance(response_as_tool_obj, bool) else False
+        )
+        output_schema_obj = row.get("output_schema")
+        has_structured_output = isinstance(output_schema_obj, str) and bool(
+            output_schema_obj
+        )
+        tool_use_enabled = row.get("tool_use_enabled") is True
+        model_obj = row.get("model")
+        is_bedrock = False
+        if isinstance(model_obj, dict):
+            provider_obj = model_obj.get("provider")
+            if provider_obj == "bedrock":
+                is_bedrock = True
+        if has_structured_output and tool_use_enabled:
+            tools_obj = row.get("tools")
+            tools_list = tools_obj if isinstance(tools_obj, list) else []
+            has_final_result_tool = False
+            for tool_obj in tools_list:
+                if not isinstance(tool_obj, dict):
+                    continue
+                tool_name = tool_obj.get("name")
+                if tool_name == "final_result":
+                    has_final_result_tool = True
+                    break
+            has_response_format = row.get("response_format") is not None
+            if response_as_tool:
+                if not has_final_result_tool:
+                    raise ValueError(
+                        f"{context}: expected final_result tool when response_as_tool=true with structured output + tools"
+                    )
+                if has_response_format:
+                    raise ValueError(
+                        f"{context}: response_format must be omitted when response_as_tool=true with structured output + tools"
+                    )
+            elif is_bedrock:
+                raise ValueError(
+                    f"{context}: invalid config for Bedrock structured output + tools with response_as_tool=false"
+                )
         if agent_id == settings.file_manager_agent_id and index >= expected_count:
             file_manager_follow_up_found = True
         if (
@@ -498,6 +539,9 @@ def verify(
     submit_rows = _read_jsonl(submit_requests_jsonl)
     output_rows = _read_jsonl(output_jsonl)
     outcome_rows = _read_jsonl(outcomes_jsonl)
+    print(
+        f"processing outcomes_jsonl={outcomes_jsonl},outcome_rows={len(outcome_rows)}"
+    )
 
     input_errors: list[str] = []
     submit_errors: list[str] = []

@@ -46,4 +46,5 @@ class ChainStepSpec(BaseModel):
     prompt_section: str
     output_schema: Optional[str] = None
     tool_choice: ToolChoice | None = None
+    response_as_tool: bool | None = None
     max_tool_calls: int | None = Field(default=None, ge=1)

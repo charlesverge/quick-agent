@@ -25,13 +25,16 @@ class ModelSettings(BaseModel):
     stop: Optional[list[str]] | openai.Omit = openai.omit
     extra_headers: Optional[Headers] | None = None
     thinking: bool | str | None = None
+    response_as_tool: bool | None = None
     extra_body: Optional[object] | openai.Omit = openai.omit
 
     model_config = {"extra": "allow", "arbitrary_types_allowed": True}
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, dict):
-            raise NotImplementedError("Comparison to dict is not supported for ModelSettings")
+            raise NotImplementedError(
+                "Comparison to dict is not supported for ModelSettings"
+            )
         if isinstance(other, ModelSettings):
             return self.model_dump(exclude_defaults=True) == other.model_dump(
                 exclude_defaults=True
