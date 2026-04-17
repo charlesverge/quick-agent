@@ -234,7 +234,7 @@ class AgentExecutor:
         next_tool_choice = submit_request.tool_choice
         if (
             submit_request.tool_choice is not None
-            and submit_request.tool_choice.mode == "required"
+            and submit_request.tool_choice.mode in ("required", "any")
         ):
             next_tool_choice = None
         return BatchSubmitRequest(
@@ -563,6 +563,11 @@ class AgentExecutor:
             batch_import = await self._call_batch_handler(request)
             outcome = self.import_outcome(batch_import=batch_import)
             if outcome.tool_calls is not None:
+                if request.tool_call_rounds() >= request.max_tool_calls:
+                    raise ValueError(
+                        f"Max tool call rounds reached for request_id={request.request_id}: "
+                        f"max_tool_calls={request.max_tool_calls}"
+                    )
                 pending = outcome.pending_submit_request
                 if pending is None:
                     raise ValueError(

@@ -1029,6 +1029,35 @@ def test_import_outcome_tool_use_missing_tool_calls_raises() -> None:
         qa._executor.import_outcome(batch_import=batch_import)
 
 
+@pytest.mark.anyio
+async def test_import_result_tool_use_enforces_max_tool_calls() -> None:
+    qa = _make_quick_agent_for_test()
+    submit_request = qa.batch().model_copy(update={"max_tool_calls": 1})
+    submit_request.messages = [
+        BatchMessage(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call1",
+                    "type": "function",
+                    "function": {"name": "random_get_name", "arguments": "{}"},
+                }
+            ],
+        )
+    ]
+    with pytest.raises(ValueError, match="Max tool call rounds reached"):
+        await qa.import_result(
+            batch_import=BatchImportRequest(
+                request_id=submit_request.request_id,
+                payload={
+                    "state": "tool_use",
+                    "tool_calls": [{"id": "call2", "name": "random_get_name"}],
+                    "submit_request": submit_request.model_dump(mode="json"),
+                },
+            )
+        )
+
+
 def test_import_outcome_handles_openai_gpt_5_2_tool_call_format() -> None:
     qa = _make_quick_agent_for_test()
     submit_request = qa.create_batch_request_for_current_step(
@@ -1121,19 +1150,19 @@ def test_build_next_request_with_tool_results_clears_tool_choice() -> None:
         user_prompt="user prompt",
         model_settings=qa._executor.context.model_settings_json,
     )
-    submit_request = submit_request.model_copy(
-        update={"tool_choice": ToolChoice(mode="required")}
-    )
     tool_calls: list[dict[str, object]] = [
         {"id": "call1", "name": "tool_name", "arguments": {"x": 1}}
     ]
     executed = [ToolCallResult(id="call1", name="tool_name", content="result text")]
-    next_req = qa._executor._build_next_request_with_tool_results(
-        tool_calls=tool_calls,
-        executed=executed,
-        submit_request=submit_request,
-    )
-    assert next_req.tool_choice is None
+    for mode in ("required", "any"):
+        next_req = qa._executor._build_next_request_with_tool_results(
+            tool_calls=tool_calls,
+            executed=executed,
+            submit_request=submit_request.model_copy(
+                update={"tool_choice": ToolChoice(mode=mode)}
+            ),
+        )
+        assert next_req.tool_choice is None
 
 
 def test_build_next_request_with_tool_results_keeps_non_required_tool_choice() -> None:

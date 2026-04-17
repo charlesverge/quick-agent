@@ -23,6 +23,11 @@ class AgentProcessor:
             outcome = self._executor.import_outcome(batch_import=batch_import)
 
             if outcome.tool_calls is not None:
+                if request.tool_call_rounds() >= request.max_tool_calls:
+                    raise ValueError(
+                        f"Max tool call rounds reached for request_id={request.request_id}: "
+                        f"max_tool_calls={request.max_tool_calls}"
+                    )
                 pending = outcome.pending_submit_request
                 if pending is None:
                     raise ValueError(

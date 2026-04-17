@@ -549,7 +549,7 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                                 "tool_ids": [],
                                 "tools": None,
                                 "response_format": None,
-                                "max_tool_calls": 1,
+                                "max_tool_calls": 0,
                                 "context": padding_template.context.model_copy(
                                     update={"input_text": "say ok", "extra_tools": []}
                                 ),

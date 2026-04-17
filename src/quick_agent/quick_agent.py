@@ -625,6 +625,11 @@ class QuickAgent:
             pending = outcome.pending_submit_request
             if pending is None:
                 raise ValueError("tool_use outcome is missing pending_submit_request.")
+            if pending.tool_call_rounds() >= pending.max_tool_calls:
+                raise ValueError(
+                    f"Max tool call rounds reached for request_id={pending.request_id}: "
+                    f"max_tool_calls={pending.max_tool_calls}"
+                )
             executed = await self._executor._execute_tool_calls(outcome.tool_calls)
             next_request = self._executor._build_next_request_with_tool_results(
                 tool_calls=outcome.tool_calls,
