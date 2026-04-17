@@ -22,15 +22,14 @@ from quick_agent.quick_agent import QuickAgent
 async def _build_requests(
     settings: HarnessSettings, reserved: int = 0
 ) -> list[BatchSubmitRequest]:
+    tools_roots = [settings.tools_dir, settings.repo_root / "examples"]
     limit = settings.count - reserved
     if limit < 5:
         raise ValueError(
             "Harness count must be at least 5 for chain-agent, file-manager, agent-memory, and tool-choice coverage."
         )
-    orchestrator = Orchestrator(
-        [settings.agents_dir], [settings.tools_dir], safe_dir=settings.safe_dir
-    )
-    agent_memory_tools = AgentTools([settings.repo_root / "examples" / "agent_memory"])
+    orchestrator = Orchestrator([settings.agents_dir], tools_roots, safe_dir=settings.safe_dir)
+    agent_memory_tools = AgentTools([settings.repo_root / "examples"])
     requests: list[BatchSubmitRequest] = []
     index = 0
     while index < limit:

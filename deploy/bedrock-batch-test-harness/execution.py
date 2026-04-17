@@ -17,7 +17,11 @@ from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.input_adaptors import TextInput
-from quick_agent.models.batch_request import BatchImportRequest, BatchSubmitRequest
+from quick_agent.models.batch_request import (
+    BatchImportRequest,
+    BatchMessage,
+    BatchSubmitRequest,
+)
 from quick_agent.quick_agent import QuickAgent
 
 logger = logging.getLogger("bedrock_batch_test_harness")
@@ -35,7 +39,9 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-def _extract_bedrock_output_text(record_id: str, model_output: dict[str, object]) -> str:
+def _extract_bedrock_output_text(
+    record_id: str, model_output: dict[str, object]
+) -> str:
     content_obj = model_output.get("content")
     if isinstance(content_obj, list):
         text_items: list[str] = []
@@ -289,7 +295,9 @@ def _has_tool_use_anthropic(model_output: dict[str, object]) -> bool:
     content = model_output.get("content")
     if not isinstance(content, list):
         return False
-    return any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content)
+    return any(
+        isinstance(item, dict) and item.get("type") == "tool_use" for item in content
+    )
 
 
 def _has_tool_use_converse(model_output: dict[str, object]) -> bool:
@@ -327,7 +335,9 @@ def _raw_tool_calls(model_output: dict[str, object]) -> list[JsonValue]:
     content = model_output.get("content")
     if isinstance(content, list):
         for item in content:
-            if isinstance(item, dict) and (item.get("type") == "tool_use" or "toolUse" in item):
+            if isinstance(item, dict) and (
+                item.get("type") == "tool_use" or "toolUse" in item
+            ):
                 calls.append(item)
     choices = model_output.get("choices")
     if isinstance(choices, list):
@@ -405,7 +415,7 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
             f"Unable to find padding template request for agent_id={settings.agent}"
         )
     registry = AgentRegistry([settings.agents_dir])
-    tools = AgentTools([settings.tools_dir, settings.repo_root / "examples" / "agent_memory"])
+    tools = AgentTools([settings.tools_dir, settings.repo_root / "examples"])
     directory_permissions = DirectoryPermissions(settings.safe_dir)
     final_outcomes: dict[str, dict[str, object]] = {}
     all_output_rows: list[dict[str, object]] = []
@@ -437,8 +447,12 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
         else:
             round_input_name = f"input-round-{round_index}.jsonl"
             round_input_path = settings.runtime_dir / round_input_name
-            round_output_path = settings.runtime_dir / f"output-round-{round_index}.jsonl"
-            submit_round_path = settings.runtime_dir / f"submit-round-{round_index}.jsonl"
+            round_output_path = (
+                settings.runtime_dir / f"output-round-{round_index}.jsonl"
+            )
+            submit_round_path = (
+                settings.runtime_dir / f"submit-round-{round_index}.jsonl"
+            )
             bucket, key = _parse_s3_uri(settings.s3_input_uri)
             key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
             if key_prefix:
@@ -464,7 +478,8 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                 )
                 if submit_round_path.exists():
                     submitted_requests: list[BatchSubmitRequest] = [
-                        BatchSubmitRequest.model_validate(r) for r in _load_jsonl(submit_round_path)
+                        BatchSubmitRequest.model_validate(r)
+                        for r in _load_jsonl(submit_round_path)
                     ]
                     for req in submitted_requests:
                         if req.request_id not in root_ids:
@@ -476,7 +491,7 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                     padded: list[BatchSubmitRequest] = list(current_requests)
                     while len(padded) < len(cached_input_rows):
                         pad_req = padding_template.model_copy(
-                            update={"request_id": f"{settings.agent}-{uuid4()}"}
+                            update={"request_id": f"noop-{settings.agent}-{uuid4()}"}
                         )
                         padded.append(pad_req)
                     if len(padded) != len(cached_input_rows):
@@ -510,7 +525,8 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                             f"Delete round {round_index} input and re-run."
                         )
                     submitted_requests = [
-                        BatchSubmitRequest.model_validate(r) for r in _load_jsonl(submit_round_path)
+                        BatchSubmitRequest.model_validate(r)
+                        for r in _load_jsonl(submit_round_path)
                     ]
                     for req in submitted_requests:
                         if req.request_id not in root_ids:
@@ -524,7 +540,19 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                     while len(submitted_requests) < settings.count:
                         padded_request = padding_template.model_copy(
                             update={
-                                "request_id": f"{settings.agent}-{uuid4()}",
+                                "request_id": f"noop-{settings.agent}-{uuid4()}",
+                                "messages": [
+                                    BatchMessage(role="user", content="say ok")
+                                ],
+                                "tool_use_enabled": False,
+                                "tool_choice": None,
+                                "tool_ids": [],
+                                "tools": None,
+                                "response_format": None,
+                                "max_tool_calls": 1,
+                                "context": padding_template.context.model_copy(
+                                    update={"input_text": "say ok", "extra_tools": []}
+                                ),
                             }
                         )
                         root_ids[padded_request.request_id] = padded_request.request_id
@@ -574,6 +602,9 @@ async def import_result_from_settings(settings: HarnessSettings) -> None:
                     )
                 agent_id = submit_request.agent_id
                 seen_ids.add(request_id)
+                if request_id.startswith("noop-"):
+                    row_index += 1
+                    continue
                 context = submit_request.context
                 agent = QuickAgent(
                     registry=registry,

@@ -10,8 +10,9 @@ from pathlib import Path
 
 from models import OutcomeRowsResult, StageResult, VerificationResult
 from pydantic import ValidationError
-from schemas.tech_keywords import TechKeywords
+from schemas.tech_keywords import RandomName, TechKeywords
 from settings import HarnessSettings
+from verify_code_rule import _parse_evaluation
 from verify_csv import RequestTracker, export_csv_by_agent, export_summary_csv
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ def _validate_tech_keywords(keywords: TechKeywords, *, context: str) -> list[str
     missing_languages = REQUIRED_LANGUAGES - languages
     if missing_languages:
         raise ValueError(
-            f"{context}: missing required computer_languages values {sorted(missing_languages)}"
+            f"{context}: missing required computer_languages values {sorted(missing_languages)} found {keywords.computer_languages}"
         )
     if not ({"node.js", "nodejs"} & languages):
         msg = f"{context}: missing required computer_languages value node.js"
@@ -141,8 +142,9 @@ def _validate_output_rows(
     index = 0
     while index < len(rows):
         row = rows[index]
-        context = f"output row index={index}"
-        record_id = _require_str(row, "recordId", context=context)
+        base_context = f"output row index={index}"
+        record_id = _require_str(row, "recordId", context=base_context)
+        context = f"{base_context} recordId={record_id}"
         if record_id in ids:
             raise ValueError(f"{context}: duplicate recordId={record_id}")
         ids.add(record_id)
@@ -234,6 +236,7 @@ def _validate_tool_choice_tool_use(
         record_id_obj = output_row.get("recordId")
         if not isinstance(record_id_obj, str):
             continue
+        context = f"recordId={record_id_obj}"
         submit_row = submit_index.get(record_id_obj)
         if not isinstance(submit_row, dict):
             continue
@@ -253,19 +256,19 @@ def _validate_tool_choice_tool_use(
             required_seen = True
             if not has_tool_use:
                 raise ValueError(
-                    f"tool-choice validation failed for step_id={step_id_obj}: expected tool call"
+                    f"tool-choice validation failed {context} step_id={step_id_obj}: expected tool call"
                 )
         if step_id_obj == settings.tool_choice_any_step_id:
             any_seen = True
             if not has_tool_use:
                 raise ValueError(
-                    f"tool-choice validation failed for step_id={step_id_obj}: expected tool call"
+                    f"tool-choice validation failed {context} step_id={step_id_obj}: expected tool call"
                 )
         if step_id_obj == settings.tool_choice_none_step_id:
             none_seen = True
             if has_tool_use:
                 raise ValueError(
-                    f"tool-choice validation failed for step_id={step_id_obj}: expected no tool call"
+                    f"tool-choice validation failed {context} step_id={step_id_obj}: expected no tool call"
                 )
     if not required_seen:
         raise ValueError(
@@ -412,6 +415,7 @@ def _validate_outcome_rows(
     expected_count: int,
     chain_index: int,
     settings: HarnessSettings,
+    record_ids_by_index: dict[int, str],
 ) -> OutcomeRowsResult:
     if len(rows) != expected_count:
         raise ValueError(
@@ -421,7 +425,12 @@ def _validate_outcome_rows(
     index = 0
     while index < len(rows):
         row = rows[index]
-        context = f"outcome row index={index}"
+        record_id = record_ids_by_index.get(index)
+        if record_id is None:
+            raise ValueError(
+                f"outcome row index={index}: missing mapped recordId from input rows"
+            )
+        context = f"outcome row index={index} recordId={record_id}"
         try:
             has_result = row.get("result") is not None
             has_next = row.get("next_request") is not None
@@ -467,6 +476,51 @@ def _validate_outcome_rows(
                 if not word:
                     raise ValueError(
                         f"{context}: agent memory result missing random word after prefix"
+                    )
+                result.warnings_by_index[index] = []
+                index += 1
+                continue
+            if record_id.startswith("code-rule-"):
+                evaluation = _parse_evaluation(row["result"], context=context)
+                if evaluation.status != "fail":
+                    raise ValueError(
+                        f"{context}: expected status=fail, got status={evaluation.status!r}"
+                    )
+                result.warnings_by_index[index] = []
+                index += 1
+                continue
+            if record_id.startswith("harness-tool-choice-random-name-"):
+                random_name_result = row["result"]
+                try:
+                    if isinstance(random_name_result, dict):
+                        random_name = RandomName.model_validate(random_name_result)
+                    elif isinstance(random_name_result, str):
+                        try:
+                            random_name = RandomName.model_validate_json(
+                                random_name_result
+                            )
+                        except ValidationError:
+                            start = random_name_result.find("{")
+                            end = random_name_result.rfind("}")
+                            if start >= 0 and end > start:
+                                random_name = RandomName.model_validate_json(
+                                    random_name_result[start : end + 1]
+                                )
+                            else:
+                                raise ValueError(
+                                    f"{context}: tool-choice result is not valid RandomName"
+                                )
+                    else:
+                        raise ValueError(
+                            f"{context}: unsupported tool-choice result type {type(random_name_result)}"
+                        )
+                except ValidationError as error:
+                    raise ValueError(
+                        f"{context}: tool-choice result is not valid RandomName"
+                    ) from error
+                if not random_name.name.strip():
+                    raise ValueError(
+                        f"{context}: tool-choice result missing non-empty name"
                     )
                 result.warnings_by_index[index] = []
                 index += 1
@@ -552,6 +606,15 @@ def verify(
     warnings_by_index: dict[int, list[str]] = {}
     input_ids: set[str] = set()
     submit_ids: set[str] = set()
+    outcome_record_ids: dict[int, str] = {}
+
+    index = 0
+    while index < len(input_rows):
+        row = input_rows[index]
+        context = f"input row index={index}"
+        record_id = _require_str(row, "recordId", context=context)
+        outcome_record_ids[index] = record_id
+        index += 1
 
     try:
         input_ids = _validate_input_rows(input_rows, expected_count)
@@ -579,7 +642,11 @@ def verify(
 
     try:
         outcome_rows_result = _validate_outcome_rows(
-            outcome_rows, expected_count, chain_index=1, settings=settings
+            outcome_rows,
+            expected_count,
+            chain_index=1,
+            settings=settings,
+            record_ids_by_index=outcome_record_ids,
         )
         for warnings_list in outcome_rows_result.warnings_by_index.values():
             outcome_warnings.extend(warnings_list)
