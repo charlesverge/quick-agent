@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import typing
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -43,16 +44,22 @@ class Tool:
 def _generate_tool_schema(func: Callable[..., Any]) -> dict[str, JsonValue]:
     """Generate JSON schema from function signature using pydantic."""
     sig = inspect.signature(func)
+    try:
+        hint_map = typing.get_type_hints(func)
+    except Exception:
+        hint_map = {}
+
     field_defs: dict[str, Any] = {}
 
     for name, param in sig.parameters.items():
-        if param.annotation == inspect.Parameter.empty:
+        annotation = hint_map.get(name, param.annotation)
+        if annotation == inspect.Parameter.empty:
             continue
 
         if param.default == inspect.Parameter.empty:
-            field_defs[name] = param.annotation
+            field_defs[name] = annotation
         else:
-            field_defs[name] = (param.annotation, param.default)
+            field_defs[name] = (annotation, param.default)
 
     if not field_defs:
         return {"type": "object", "properties": {}}

@@ -11,6 +11,7 @@ model:
   model_name: "qwen.qwen3-next-80b-a3b"
   temperature: 0.1
   max_completion_tokens: 2048
+max_tool_calls: 8
 
 # Tools available to this agent
 tools:
