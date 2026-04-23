@@ -10,7 +10,7 @@ variable "aws_profile" {
 
 variable "bucket_name_prefix" {
   type    = string
-  default = "quick-agent-bedrock-batch"
+  default = "jobs-agent-bedrock-batch"
 }
 
 variable "model_id" {

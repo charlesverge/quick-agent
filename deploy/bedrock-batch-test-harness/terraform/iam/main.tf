@@ -34,8 +34,14 @@ resource "aws_iam_user_policy" "bedrock_console" {
       {
         Sid      = "S3BucketReadOnlyForHarness"
         Effect   = "Allow"
-        Action   = ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetObject"]
-        Resource = ["arn:aws:s3:::${var.bucket_name_prefix}-*", "arn:aws:s3:::${var.bucket_name_prefix}-*/*"]
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = ["arn:aws:s3:::${var.bucket_name_prefix}-${data.aws_caller_identity.current.account_id}-${var.aws_region}-*"]
+      },
+      {
+        Sid      = "S3ObjectReadOnlyForHarness"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["arn:aws:s3:::${var.bucket_name_prefix}-${data.aws_caller_identity.current.account_id}-${var.aws_region}-*/*"]
       }
     ]
   })

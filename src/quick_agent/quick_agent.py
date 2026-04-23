@@ -538,6 +538,7 @@ class QuickAgent:
                 max_completion_tokens=self.model_spec.max_completion_tokens,
                 extra_headers=self._executor.context.extra_headers or None,
                 extra_body=self._executor.context.extra_body or None,
+                bedrock_request_mode=model_settings.bedrock_request_mode,
             ),
             messages=self._build_batch_messages(
                 instructions=instructions,

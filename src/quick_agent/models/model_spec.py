@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 import openai
@@ -29,6 +29,9 @@ class ModelSettings(BaseModel):
     tool_choice: ToolChoice | None = None
     response_as_tool: bool | None = None
     extra_body: Optional[object] | openai.Omit = openai.omit
+    bedrock_request_mode: (
+        Literal["converse", "anthropic_invoke", "open_weight_invoke"] | None
+    ) = "converse"
 
     model_config = {"extra": "allow", "arbitrary_types_allowed": True}
 

@@ -21,7 +21,7 @@ variable "deployer_profile_name" {
 
 variable "bucket_name_prefix" {
   type    = string
-  default = "quick-agent-bedrock-batch"
+  default = "jobs-agent-bedrock-batch"
 }
 
 variable "bedrock_batch_role_name" {
