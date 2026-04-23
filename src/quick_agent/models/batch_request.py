@@ -13,6 +13,7 @@ from pydantic import (
     field_serializer,
     model_validator,
 )
+from quick_agent.json_utils import validate_bedrock_schema
 from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.types import AgentResult
 
@@ -242,6 +243,70 @@ class BatchSubmitRequest(BaseModel):
             return "none"
         return None
 
+    def _bedrock_response_schema(self) -> dict[str, object] | None:
+        response_format = self.response_format
+        if response_format is None and self.model.extra_body is not None:
+            response_format_obj = self.model.extra_body.get("response_format")
+            if isinstance(response_format_obj, dict):
+                response_format = response_format_obj
+        if response_format is None:
+            return None
+        if response_format.get("type") != "json_schema":
+            raise ValueError(
+                "Bedrock structured output requires response_format.type='json_schema'."
+            )
+        json_schema_obj = response_format.get("json_schema")
+        if isinstance(json_schema_obj, dict):
+            schema_obj = json_schema_obj.get("schema")
+            if isinstance(schema_obj, dict):
+                schema: dict[str, object] = {}
+                for key, value in schema_obj.items():
+                    schema[str(key)] = value
+                return schema
+        structure_obj = response_format.get("structure")
+        if not isinstance(structure_obj, dict):
+            raise ValueError(
+                "Bedrock structured output requires response_format.json_schema or response_format.structure.jsonSchema."
+            )
+        structure_schema = structure_obj.get("jsonSchema")
+        if not isinstance(structure_schema, dict):
+            raise ValueError(
+                "Bedrock structured output requires response_format.structure.jsonSchema."
+            )
+        raw_schema = structure_schema.get("schema")
+        if isinstance(raw_schema, dict):
+            schema = {}
+            for key, value in raw_schema.items():
+                schema[str(key)] = value
+            return schema
+        if not isinstance(raw_schema, str):
+            raise ValueError(
+                "Bedrock structured output requires jsonSchema.schema to be a JSON string or object."
+            )
+        parsed = json.loads(raw_schema)
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "Bedrock structured output requires jsonSchema.schema to decode to an object."
+            )
+        schema = {}
+        for key, value in parsed.items():
+            schema[str(key)] = value
+        return schema
+
+    def _validate_bedrock_tools(self) -> None:
+        if self.tools is None:
+            return
+        for tool in self.tools:
+            if tool.strict is not True:
+                raise ValueError(f"Bedrock tool '{tool.name}' must set strict=true.")
+            schema: dict[str, object] = {}
+            for key, value in tool.input_schema.items():
+                schema[str(key)] = value
+            validate_bedrock_schema(
+                schema,
+                context=f"Bedrock tool schema for '{tool.name}'",
+            )
+
     def tool_call_rounds(self) -> int:
         count = 0
         for message in self.messages:
@@ -252,16 +317,17 @@ class BatchSubmitRequest(BaseModel):
         return count
 
     def _build_converse_jsonl_line(self) -> dict[str, object]:
+        is_noop = self.request_id.startswith("noop-") or ":noop:" in self.request_id
         converse_msgs: list[dict[str, object]] = []
         system_blocks: list[dict[str, object]] = []
         for message in self.messages:
             if message.role == "system":
-                if message.content:
-                    system_blocks.append({"type": "text", "text": message.content})
+                if message.content and not is_noop:
+                    system_blocks.append({"text": message.content})
                 continue
             if message.role == "user":
                 content_blocks: list[dict[str, object]] = [
-                    {"type": "text", "text": message.content or ""}
+                    {"text": message.content or ""}
                 ]
                 converse_msgs.append({"role": "user", "content": content_blocks})
                 continue
@@ -278,9 +344,7 @@ class BatchSubmitRequest(BaseModel):
             if message.role == "assistant":
                 assistant_content_blocks: list[dict[str, object]] = []
                 if message.content:
-                    assistant_content_blocks.append(
-                        {"type": "text", "text": message.content}
-                    )
+                    assistant_content_blocks.append({"text": message.content})
                 if message.tool_calls:
                     for tc in message.tool_calls:
                         func_obj = tc.get("function")
@@ -309,7 +373,7 @@ class BatchSubmitRequest(BaseModel):
                             }
                         )
                 if not assistant_content_blocks:
-                    assistant_content_blocks.append({"type": "text", "text": ""})
+                    assistant_content_blocks.append({"text": ""})
                 converse_msgs.append(
                     {"role": "assistant", "content": assistant_content_blocks}
                 )
@@ -326,8 +390,38 @@ class BatchSubmitRequest(BaseModel):
                 if key in ("inferenceConfig", "bedrock_request_mode"):
                     continue
                 if key == "response_format":
+                    if is_noop:
+                        continue
+                    converted_text_format = value
+                    if (
+                        isinstance(value, dict)
+                        and value.get("type") == "json_schema"
+                        and "json_schema" in value
+                        and "structure" not in value
+                    ):
+                        json_schema_obj = value.get("json_schema")
+                        if isinstance(json_schema_obj, dict):
+                            schema_obj = json_schema_obj.get("schema")
+                            if isinstance(schema_obj, dict):
+                                schema_obj = json.dumps(schema_obj)
+                            converted_text_format = {
+                                "type": "json_schema",
+                                "structure": {
+                                    "jsonSchema": {
+                                        "name": json_schema_obj.get("name"),
+                                        "description": json_schema_obj.get(
+                                            "description"
+                                        ),
+                                        "schema": schema_obj,
+                                    }
+                                },
+                            }
                     if "outputConfig" not in model_input:
-                        model_input["outputConfig"] = {"textFormat": value}
+                        model_input["outputConfig"] = {
+                            "textFormat": converted_text_format
+                        }
+                    continue
+                if key == "outputConfig" and is_noop:
                     continue
                 if key in (
                     "additionalModelRequestFields",
@@ -341,9 +435,30 @@ class BatchSubmitRequest(BaseModel):
                     "toolConfig",
                 ):
                     model_input[key] = value
-        if self.response_format is not None:
+        if self.response_format is not None and not is_noop:
+            text_format: dict[str, JsonValue] = self.response_format
+            if (
+                self.response_format.get("type") == "json_schema"
+                and "json_schema" in self.response_format
+                and "structure" not in self.response_format
+            ):
+                json_schema_obj = self.response_format.get("json_schema")
+                if isinstance(json_schema_obj, dict):
+                    schema_obj = json_schema_obj.get("schema")
+                    if isinstance(schema_obj, dict):
+                        schema_obj = json.dumps(schema_obj)
+                    text_format = {
+                        "type": "json_schema",
+                        "structure": {
+                            "jsonSchema": {
+                                "name": json_schema_obj.get("name"),
+                                "description": json_schema_obj.get("description"),
+                                "schema": schema_obj,
+                            }
+                        },
+                    }
             if "outputConfig" not in model_input:
-                model_input["outputConfig"] = {"textFormat": self.response_format}
+                model_input["outputConfig"] = {"textFormat": text_format}
         if self.tools and "toolConfig" not in model_input:
             tool_specs: list[dict[str, object]] = []
             for tool_def in self.tools:
@@ -559,6 +674,14 @@ class BatchSubmitRequest(BaseModel):
 
     @property
     def jsonl_line(self) -> dict[str, object]:
+        is_noop = self.request_id.startswith("noop-") or ":noop:" in self.request_id
+        response_schema = None if is_noop else self._bedrock_response_schema()
+        if response_schema is not None:
+            validate_bedrock_schema(
+                response_schema,
+                context=f"Bedrock structured output schema for '{self.request_id}'",
+            )
+        self._validate_bedrock_tools()
         mode = self._resolve_bedrock_request_mode()
         if mode == "converse":
             return self._build_converse_jsonl_line()

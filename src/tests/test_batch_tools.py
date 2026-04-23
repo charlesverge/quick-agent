@@ -140,6 +140,28 @@ def test_create_batch_request_includes_tool_definitions() -> None:
     assert "directory" in properties
 
 
+def test_create_batch_request_bedrock_tool_schema_is_strict() -> None:
+    tools_root = Path(__file__).parent.parent / "quick_agent" / "tools"
+    qa = _make_quick_agent_for_test()
+    qa.model_spec = ModelSpec(provider="bedrock", base_url="http://x", model_name="m")
+    qa._tools = AgentTools([tools_root])
+    qa.tool_ids = ["filesystem_list_files"]
+
+    request = qa.create_batch_request_for_current_step(
+        step_id=None,
+        step_kind="single_shot",
+        output_schema=None,
+        instructions=None,
+        system_prompt="sys",
+        user_prompt="input",
+        model_settings=qa._executor.context.model_settings_json,
+    )
+
+    assert request.tools is not None
+    assert request.tools[0].strict is True
+    assert request.tools[0].input_schema["additionalProperties"] is False
+
+
 def test_create_batch_request_uses_model_settings_tool_choice_any() -> None:
     qa = _make_quick_agent_for_test()
     qa.loaded.spec.tool_choice = ToolChoice(mode="any")
@@ -254,6 +276,38 @@ def test_batch_submit_converse_jsonl_includes_tool_strict_flag() -> None:
     assert tools_obj[0]["toolSpec"]["strict"] is True
 
 
+def test_batch_submit_jsonl_line_rejects_non_strict_bedrock_tool() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-tools-not-strict",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        messages=[BatchMessage(role="user", content="hello")],
+        tools=[
+            BatchToolDefinition(
+                name="filesystem_list_files",
+                description="List files",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                strict=False,
+            )
+        ],
+        tool_use_enabled=True,
+    )
+
+    with pytest.raises(ValueError, match="must set strict=true"):
+        _ = request.jsonl_line
+
+
 def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> None:
     request = BatchSubmitRequest(
         request_id="r1",
@@ -321,13 +375,143 @@ def test_batch_submit_jsonl_line_uses_converse_model_input_shape() -> None:
     line = request.jsonl_line
     model_input = line["modelInput"]
     assert isinstance(model_input, dict)
-    assert model_input["system"] == [{"type": "text", "text": "sys"}]
+    assert model_input["system"] == [{"text": "sys"}]
     messages = model_input["messages"]
     assert isinstance(messages, list)
     assert messages[0] == {
         "role": "user",
-        "content": [{"type": "text", "text": "hello"}],
+        "content": [{"text": "hello"}],
     }
+
+
+def test_batch_submit_jsonl_line_omits_converse_system_and_output_for_noop() -> None:
+    request = BatchSubmitRequest(
+        request_id="bedrock-20260423T134748Z-1776952068677:noop:9",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        response_format={"type": "json_schema"},
+        messages=[
+            BatchMessage(role="system", content="sys"),
+            BatchMessage(role="user", content="say ok"),
+        ],
+    )
+    model_input = request.jsonl_line["modelInput"]
+    assert isinstance(model_input, dict)
+    assert "system" not in model_input
+    assert "outputConfig" not in model_input
+
+
+def test_batch_submit_jsonl_line_converts_converse_response_format() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-converse-structured",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="openai-compatible",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "CompanyPageRouterOutput",
+                "schema": {
+                    "type": "object",
+                    "properties": {"page_type": {"type": "string"}},
+                    "required": ["page_type"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+    model_input = request.jsonl_line["modelInput"]
+    assert isinstance(model_input, dict)
+    output_config = model_input["outputConfig"]
+    assert isinstance(output_config, dict)
+    text_format = output_config["textFormat"]
+    assert isinstance(text_format, dict)
+    assert text_format["type"] == "json_schema"
+    structure = text_format["structure"]
+    assert isinstance(structure, dict)
+    json_schema_obj = structure["jsonSchema"]
+    assert isinstance(json_schema_obj, dict)
+    assert json_schema_obj["name"] == "CompanyPageRouterOutput"
+    assert json_schema_obj["schema"] == json.dumps(
+        {
+            "type": "object",
+            "properties": {"page_type": {"type": "string"}},
+            "required": ["page_type"],
+            "additionalProperties": False,
+        }
+    )
+
+
+def test_batch_submit_jsonl_line_rejects_unsupported_bedrock_schema_keyword() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-converse-invalid-schema",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "InvalidSchema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"page_type": {"type": "string", "minLength": 1}},
+                    "required": ["page_type"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+
+    with pytest.raises(ValueError, match="minLength: minLength is not supported"):
+        _ = request.jsonl_line
+
+
+def test_batch_submit_jsonl_line_rejects_external_ref_for_bedrock() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-converse-external-ref",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "InvalidSchema",
+                "schema": {"$ref": "https://example.com/schema.json"},
+            },
+        },
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+
+    with pytest.raises(ValueError, match="external \\$ref values are not supported"):
+        _ = request.jsonl_line
 
 
 def test_batch_submit_jsonl_line_uses_anthropic_invoke_model_input_shape() -> None:

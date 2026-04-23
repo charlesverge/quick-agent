@@ -522,7 +522,15 @@ class QuickAgent:
         if self._is_bedrock_request():
             strict_tools: list[BatchToolDefinition] = []
             for tool in tools:
-                strict_tools.append(tool.model_copy(update={"strict": True}))
+                tool_schema: dict[str, JsonValue] = {}
+                for key, value in tool.input_schema.items():
+                    tool_schema[str(key)] = value
+                self._apply_strict_schema(tool_schema)
+                strict_tools.append(
+                    tool.model_copy(
+                        update={"input_schema": tool_schema, "strict": True}
+                    )
+                )
             tools = strict_tools
         return BatchSubmitRequest(
             request_id=request_id,
