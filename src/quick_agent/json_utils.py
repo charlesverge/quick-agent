@@ -220,19 +220,32 @@ def validate_bedrock_schema(schema: dict[str, object], *, context: str) -> None:
 
 _EXTRA_WS = r'(?:\s|\\n|\\r|\\t)*'
 
+_RE_LEADING_EMPTY_ARRAY = re.compile(
+    rf'^{_EXTRA_WS}\[\]{_EXTRA_WS}'
+)
+
 _RE_EXTRA_LEADING_BRACE = re.compile(
     rf'^\{{{_EXTRA_WS}(?:(?:\\")|")?{_EXTRA_WS}\{{{_EXTRA_WS}"?'
 )
 
+_RE_ESCAPED_OPENING_OBJECT_QUOTE = re.compile(
+    rf'^\{{{_EXTRA_WS}\\\"'
+)
+
 
 def extract_extract_brackets(text: str) -> str:
-    repaired, replacement_count = _RE_EXTRA_LEADING_BRACE.subn('{"', text, count=1)
+    original = text
 
-    if replacement_count == 0:
-        raise QuickAgentLLMTemporaryException(
-            message="extract_extract_brackets failed.",
-            output=text,
-        )
+    # []{\"locations\":[]} -> {\"locations\":[]}
+    repaired = _RE_LEADING_EMPTY_ARRAY.sub('', text, count=1)
+
+    # {\"locations\":[]} -> {"locations":[]}
+    repaired = _RE_ESCAPED_OPENING_OBJECT_QUOTE.sub('{"', repaired, count=1)
+
+    # {"{"foo": "bar"} -> {"foo": "bar"}
+    # {\"{"foo": "bar"} -> {"foo": "bar"}
+    # {{"foo": "bar"} -> {"foo": "bar"}
+    repaired = _RE_EXTRA_LEADING_BRACE.sub('{"', repaired, count=1)
 
     try:
         json.loads(repaired)
@@ -240,7 +253,7 @@ def extract_extract_brackets(text: str) -> str:
     except json.JSONDecodeError:
         raise QuickAgentLLMTemporaryException(
             message="extract_extract_brackets failed.",
-            output=text,
+            output=original,
         )
 
 def extract_first_json_object(text: str) -> str:
