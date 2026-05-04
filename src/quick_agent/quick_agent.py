@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict
+from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict, cast
 from uuid import uuid4
 
 import httpx
@@ -28,7 +28,7 @@ from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.executor import AgentExecutor
 from quick_agent.input_adaptors import FileInput, InputAdaptor, TextInput
 from quick_agent.io_utils import write_output as write_text
-from quick_agent.json_utils import extract_first_json_object, json_compatible_value
+from quick_agent.json_utils import json_compatible_value, repair_json_text
 from quick_agent.mapping.map_chunks import MapChunks
 from quick_agent.mapping.map_paragraphs import MapParagraphs
 from quick_agent.models.batch_request import (
@@ -191,8 +191,8 @@ class QuickAgent:
     def load_batch_context(self, *, context: BatchAgentContext) -> None:
         state_obj = context.state
         agent_id_obj = state_obj.get("agent_id")
-        steps_obj = state_obj.get("steps")
-        if not isinstance(agent_id_obj, str) or not isinstance(steps_obj, dict):
+        steps_obj: dict[str, StepOutput] = cast(dict[str, StepOutput], state_obj.get("steps") or {})
+        if not isinstance(agent_id_obj, str):
             raise ValueError("Invalid batch context state.")
         steps: dict[str, StepOutput] = {}
         for key, value in steps_obj.items():
@@ -814,7 +814,7 @@ class QuickAgent:
                     parsed = json.loads(output)
                 except json.JSONDecodeError:
                     print(output)
-                    cleaned_raw = extract_first_json_object(output)
+                    cleaned_raw = repair_json_text(output)
                     parsed = json.loads(cleaned_raw)
                 if not isinstance(parsed, dict):
                     raise ValueError("JSON output must be a JSON object.")

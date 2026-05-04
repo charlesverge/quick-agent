@@ -23,3 +23,13 @@ class QuickAgentChatNotSupportedException(QuickAgentException):
         super().__init__(message)
         self.model_name = model_name
         self.message = message
+
+class QuickAgentLLMTemporaryException(QuickAgentException):
+    """Raised when a model returns a temporary error, such as a rate limit error, invalid json output.
+    This indicates that the request may succeed if retried after a delay.
+    """
+
+    def __init__(self, *, message: str, output: str | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.output = output

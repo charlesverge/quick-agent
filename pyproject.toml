@@ -17,6 +17,7 @@ dependencies = [
   "types-PyYAML",
   "PyYAML>=6.0.3",
   "tiktoken>=0.12.0",
+  "json-repair>=0.59.5",
 ]
 keywords = ["agents", "llm", "automation", "pydantic", "markdown", "orchestrator"]
 classifiers = [

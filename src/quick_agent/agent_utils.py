@@ -5,7 +5,7 @@ from typing import Type
 
 from pydantic import BaseModel
 
-from quick_agent.json_utils import extract_first_json_object, json_compatible_value
+from quick_agent.json_utils import json_compatible_value, repair_json_text
 from quick_agent.types import AgentResult
 
 
@@ -31,6 +31,17 @@ def normalize_usage_metrics(usage: object) -> dict[str, object]:
     return usage_dict
 
 
+def repair_cycle(raw_output: str, schema_cls: Type[BaseModel], attempt : int = 0) -> BaseModel:
+    prefix = "repair_cycle"
+    for attempt in range(0, 3):
+      try:
+        cleaned_raw = repair_json_text(raw_output, attempt)
+        return schema_cls.model_validate_json(cleaned_raw)
+      except Exception:
+          if attempt == 2:
+              raise
+    raise ValueError(f"{prefix}: All attempts failed to repair json {raw_output}")
+
 def parse_structured_result(
     raw_output: object, schema_cls: Type[BaseModel]
 ) -> BaseModel:
@@ -43,8 +54,7 @@ def parse_structured_result(
         try:
             return schema_cls.model_validate_json(raw_output)
         except (json.JSONDecodeError, ValueError):
-            cleaned_raw = extract_first_json_object(raw_output)
-            return schema_cls.model_validate_json(cleaned_raw)
+          return repair_cycle(raw_output, schema_cls)
     return schema_cls.model_validate(raw_output)
 
 

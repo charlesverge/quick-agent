@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 
+import json_repair
 import openai
 
+from .exceptions import QuickAgentLLMTemporaryException
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_BEDROCK_JSON_TYPES = (
     "object",
@@ -212,15 +218,40 @@ def validate_bedrock_schema(schema: dict[str, object], *, context: str) -> None:
         ref_stack=[],
     )
 
+_EXTRA_WS = r'(?:\s|\\n|\\r|\\t)*'
+
+_RE_EXTRA_LEADING_BRACE = re.compile(
+    rf'^\{{{_EXTRA_WS}(?:(?:\\")|")?{_EXTRA_WS}\{{{_EXTRA_WS}"?'
+)
+
+
+def extract_extract_brackets(text: str) -> str:
+    repaired, replacement_count = _RE_EXTRA_LEADING_BRACE.subn('{"', text, count=1)
+
+    if replacement_count == 0:
+        raise QuickAgentLLMTemporaryException(
+            message="extract_extract_brackets failed.",
+            output=text,
+        )
+
+    try:
+        json.loads(repaired)
+        return repaired
+    except json.JSONDecodeError:
+        raise QuickAgentLLMTemporaryException(
+            message="extract_extract_brackets failed.",
+            output=text,
+        )
 
 def extract_first_json_object(text: str) -> str:
     """
     Extract the first top-level JSON object from text.
     This is a fallback for models that wrap JSON in extra text.
     """
+    prefix = "QuickAgent.extract_first_json_object"
     start = text.find("{")
     if start == -1:
-        raise ValueError("No JSON object found in model output.")
+        raise ValueError(f"{prefix} No JSON object found in model output. Output was: {text!r}")
 
     depth = 0
     in_string = False
@@ -244,7 +275,25 @@ def extract_first_json_object(text: str) -> str:
                 if depth == 0:
                     return text[start : i + 1]
 
-    raise ValueError("Unbalanced JSON object in model output.")
+    raise QuickAgentLLMTemporaryException(message="Unbalanced JSON object in model output.", output=text)
+
+def repair_json_text(text: str, mode = 0) -> str:
+    """
+    Extract the first top-level JSON object from text.
+    This is a fallback for models that wrap JSON in extra text.
+    """
+    prefix = "QuickAgent.extract_first_json_object"
+    if mode == 0:
+      try:
+        decoded_object = json_repair.loads(text)
+        return json.dumps(decoded_object)
+      except Exception:
+          logger.error("f{prefix}: json_repair failed {text} {e}")
+      return extract_first_json_object(text)
+    if mode == 1:
+      return extract_first_json_object(text)
+    return extract_extract_brackets(text)
+    
 
 
 def json_compatible_value(value: object) -> object:

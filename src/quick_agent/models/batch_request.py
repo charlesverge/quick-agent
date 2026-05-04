@@ -13,6 +13,7 @@ from pydantic import (
     field_serializer,
     model_validator,
 )
+
 from quick_agent.json_utils import validate_bedrock_schema
 from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.types import AgentResult
@@ -452,7 +453,7 @@ class BatchSubmitRequest(BaseModel):
                         "structure": {
                             "jsonSchema": {
                                 "name": json_schema_obj.get("name"),
-                                "description": json_schema_obj.get("description"),
+                                "description": json_schema_obj.get("schema", {}).get("description", ""),
                                 "schema": schema_obj,
                             }
                         },
