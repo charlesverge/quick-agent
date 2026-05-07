@@ -27,7 +27,6 @@ from quick_agent.exceptions import (
     QuickAgentChatNotSupportedException,
     QuickAgentToolsNotSupportedException,
 )
-from quick_agent.executor import ToolCallResult
 from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
 from quick_agent.models.batch_request import (
     BatchImportOutcome,
@@ -35,14 +34,12 @@ from quick_agent.models.batch_request import (
     BatchMessage,
     BatchModelConfig,
     BatchSubmitRequest,
-    BatchToolDefinition,
 )
 from quick_agent.models.content_processing_spec import (
     ChunkProcessingSpec,
     ContentProcessingSpec,
     SampleSpec,
 )
-from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.models.handoff_spec import HandoffSpec
 from quick_agent.models.model_spec import ModelSettings
 from quick_agent.models.output_spec import OutputSpec
@@ -933,7 +930,11 @@ async def test_run_text_step_uses_make_user_prompt(
         (
             (run_input, qa.state),
             {},
-        )
+        ),
+        (
+            (run_input, qa.state),
+            {},
+        ),
     ]
 
 
@@ -1335,11 +1336,13 @@ async def test_run_returns_compiled_json_output_when_enabled() -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.state = {
         "agent_id": "a",
-        "steps": {"s1": {"a": 1}, "s2": "b"},
-        "last_step_output": "b",
+        "steps": {},
+        "last_step_output": None,
     }
 
     async def fake_run_chain() -> str:
+        qa.state["steps"] = {"s1": {"a": 1}, "s2": "b"}
+        qa.state["last_step_output"] = "b"
         return "b"
 
     qa._run_chain = fake_run_chain  # type: ignore[assignment]
@@ -1360,11 +1363,13 @@ async def test_run_returns_compiled_text_output_when_enabled() -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.state = {
         "agent_id": "a",
-        "steps": {"s1": "first", "s2": "second"},
-        "last_step_output": "second",
+        "steps": {},
+        "last_step_output": None,
     }
 
     async def fake_run_chain() -> str:
+        qa.state["steps"] = {"s1": "first", "s2": "second"}
+        qa.state["last_step_output"] = "second"
         return "second"
 
     qa._run_chain = fake_run_chain  # type: ignore[assignment]
@@ -1407,11 +1412,13 @@ async def test_run_returns_compiled_structured_output_when_enabled() -> None:
     qa = _make_quick_agent_for_test(loaded=loaded)
     qa.state = {
         "agent_id": "a",
-        "steps": {"s2": "two", "s3": "three"},
-        "last_step_output": "three",
+        "steps": {},
+        "last_step_output": None,
     }
 
     async def fake_run_chain() -> str:
+        qa.state["steps"] = {"s2": "two", "s3": "three"}
+        qa.state["last_step_output"] = "three"
         return "three"
 
     qa._run_chain = fake_run_chain  # type: ignore[assignment]
@@ -1620,8 +1627,8 @@ async def test_run_returns_chunk_text_items_without_llm_for_empty_body(
         data=None,
     )
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
-    run_chunk_agent_recorder = AsyncCallRecorder(return_value="processed")
-    monkeypatch.setattr(qa, "_run_chunk_agent", run_chunk_agent_recorder)
+    execute_request_recorder = AsyncCallRecorder(return_value="processed")
+    monkeypatch.setattr(qa, "_execute_request", execute_request_recorder)
 
     output = await qa.run()
 
@@ -1629,7 +1636,7 @@ async def test_run_returns_chunk_text_items_without_llm_for_empty_body(
     items = output
     assert len(items) >= 2
     assert all(isinstance(entry, str) for entry in items)
-    assert len(run_chunk_agent_recorder.calls) == 0
+    assert len(execute_request_recorder.calls) == 0
 
 
 @pytest.mark.anyio
@@ -1654,8 +1661,8 @@ async def test_run_returns_chunk_output_when_chunk_processing_configured(
         data=None,
     )
     qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
-    run_chunk_agent_recorder = AsyncCallRecorder(return_value="processed")
-    monkeypatch.setattr(qa, "_run_chunk_agent", run_chunk_agent_recorder)
+    execute_request_recorder = AsyncCallRecorder(return_value="processed")
+    monkeypatch.setattr(qa, "_execute_request", execute_request_recorder)
 
     output = await qa.run()
 
@@ -1663,7 +1670,7 @@ async def test_run_returns_chunk_output_when_chunk_processing_configured(
     items = output
     assert len(items) >= 1
     assert all(entry == "processed" for entry in items)
-    assert len(run_chunk_agent_recorder.calls) == len(items)
+    assert len(execute_request_recorder.calls) == len(items)
 
 
 def test_run_chunk_processing_raises_for_invalid_provider() -> None:
@@ -2462,7 +2469,7 @@ async def test_run_agent_wires_dependencies(
     )
     toolset = RecordingToolset()
     model = object()
-    settings = {"extra_body": {"format": "json"}}
+    settings = ModelSettings(extra_body={"format": "json"})
     out_path = tmp_path / "out.json"
 
     load_input_recorder = SyncCallRecorder(return_value=run_input)
@@ -2481,6 +2488,7 @@ async def test_run_agent_wires_dependencies(
         "build_model_settings",
         build_settings_recorder,
     )
+    monkeypatch.setattr(QuickAgent, "_batch_tools", SyncCallRecorder(return_value=[]))
     monkeypatch.setattr(QuickAgent, "_run_chain", run_chain_recorder)
     monkeypatch.setattr(qa_module, "write_output", write_output_recorder)
     monkeypatch.setattr(QuickAgent, "_handle_handoff", handoff_recorder)
@@ -2571,7 +2579,6 @@ async def test_run_skips_write_when_output_file_missing(
     load_input_recorder = SyncCallRecorder(return_value=run_input)
     build_model_recorder = SyncCallRecorder(return_value=model)
     build_toolset_recorder = SyncCallRecorder(return_value=toolset)
-    build_settings_recorder = SyncCallRecorder(return_value=None)
     maybe_inject_recorder = SyncCallRecorder(return_value=None)
     run_chain_recorder = AsyncCallRecorder(return_value={"result": "final"})
     write_output_recorder = SyncCallRecorder(return_value=tmp_path / "out.json")
@@ -2791,16 +2798,18 @@ async def test_orchestrator_batch_uses_same_arguments_as_run(
     run_input = input_adaptors_module.TextInput("hello")
     init_recorder = SyncCallRecorder(return_value=None)
     batch_recorder = SyncCallRecorder(
-        return_value=BatchSubmitRequest(
-            request_id="r1",
-            agent_id="file-manager",
-            step_id=None,
-            step_kind="single_shot",
-            model=BatchModelConfig(
-                provider="openai-compatible", base_url="http://x", model_name="m"
-            ),
-            messages=[BatchMessage(role="user", content="hello")],
-        )
+        return_value=[
+            BatchSubmitRequest(
+                request_id="r1",
+                agent_id="file-manager",
+                step_id=None,
+                step_kind="single_shot",
+                model=BatchModelConfig(
+                    provider="openai-compatible", base_url="http://x", model_name="m"
+                ),
+                messages=[BatchMessage(role="user", content="hello")],
+            )
+        ]
     )
     monkeypatch.setattr(QuickAgent, "__init__", init_recorder)
     monkeypatch.setattr(QuickAgent, "batch", batch_recorder)
@@ -2814,7 +2823,7 @@ async def test_orchestrator_batch_uses_same_arguments_as_run(
         record_http_traffic=False,
         enable_llm_request_logging=False,
     )
-    assert request.agent_id == "file-manager"
+    assert request[0].agent_id == "file-manager"
     assert len(init_recorder.calls) == 1
     _, kwargs = init_recorder.calls[0]
     model = kwargs.get("model")
@@ -2945,7 +2954,7 @@ async def test_import_chain_result_accepts_dict_for_structured_step() -> None:
 
 
 def test_parse_structured_result_rejects_wrong_basemodel_type() -> None:
-    qa = _make_quick_agent_for_test()
+    _make_quick_agent_for_test()
     with pytest.raises(ValidationError):
         parse_structured_result(OtherSchema(msg="x"), ExampleSchema)
 
@@ -3024,7 +3033,7 @@ async def test_agent_processor_run_batch_simple_completion(
         agent._test_mode = True
         processor = AgentProcessor(agent._executor)
 
-        batch_request = agent.batch()
+        batch_request = agent.batch()[0]
         result = await processor.run_batch(batch_request)
         assert result.payload["state"] == "completed"
         assert result.payload["output"] == "hello"
@@ -3075,7 +3084,7 @@ async def test_agent_processor_run_batch_with_tool_loop(
         agent._test_mode = True
         processor = AgentProcessor(agent._executor)
 
-        batch_request = agent.batch()
+        batch_request = agent.batch()[0]
         result = await processor.run_batch(batch_request)
         assert result is not None
     finally:

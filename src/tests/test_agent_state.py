@@ -11,13 +11,12 @@ import pytest
 from quick_agent.agent_state import AgentState
 from quick_agent.models.batch_request import (
     BatchAgentContext,
-    BatchModelConfig,
-    BatchMessage,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HARNESS_AGENTS = REPO_ROOT / "deploy" / "bedrock-batch-test-harness" / "agents"
+HARNESS_AGENTS = (
+    REPO_ROOT / "src" / "tests" / "fixtures" / "bedrock-batch-test-harness" / "agents"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -150,14 +149,13 @@ def test_executor_state_mutation_visible_in_quick_agent() -> None:
 
 @pytest.mark.anyio
 async def test_execute_tool_calls_injects_agent_state() -> None:
-    from quick_agent.executor import AgentExecutor
     from quick_agent.agent_config import AgentConfig
+    from quick_agent.executor import AgentExecutor
+    from quick_agent.models import AgentSpec
     from quick_agent.models.loaded_agent_file import LoadedAgentFile
     from quick_agent.models.model_spec import ModelSpec
-    from quick_agent.models.run_input import RunInput
-    from quick_agent.models.batch_request import BatchImportOutcome
     from quick_agent.models.output_spec import OutputSpec
-    from quick_agent.models import AgentSpec
+    from quick_agent.models.run_input import RunInput
 
     received: list[AgentState] = []
 
@@ -220,14 +218,13 @@ async def test_execute_tool_calls_injects_agent_state() -> None:
 
 @pytest.mark.anyio
 async def test_execute_tool_calls_plain_tool_no_state() -> None:
-    from quick_agent.executor import AgentExecutor
     from quick_agent.agent_config import AgentConfig
-    from quick_agent.models.loaded_agent_file import LoadedAgentFile
-    from quick_agent.models.run_input import RunInput
-    from quick_agent.models.batch_request import BatchImportOutcome
-    from quick_agent.models.output_spec import OutputSpec
+    from quick_agent.executor import AgentExecutor
     from quick_agent.models import AgentSpec
+    from quick_agent.models.loaded_agent_file import LoadedAgentFile
     from quick_agent.models.model_spec import ModelSpec
+    from quick_agent.models.output_spec import OutputSpec
+    from quick_agent.models.run_input import RunInput
 
     def plain_tool(word: str) -> str:
         return f"echo {word}"

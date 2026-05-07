@@ -19,7 +19,7 @@ class FunctionSchema:
     name: str = ""
     description: str = ""
 
-    def to_openai_tool(self) -> dict[str, object]:
+    def to_openai_tool(self) -> dict[str, JsonValue]:
         """Convert to OpenAI tool format."""
         return {
             "type": "function",

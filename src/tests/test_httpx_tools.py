@@ -510,7 +510,7 @@ async def test_extra_headers_merge_model_spec_and_param(
     http_client = httpx.AsyncClient(transport=transport)
     if "OPENAI_API_KEY" not in os.environ:
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    client = AsyncOpenAI(http_client=http_client)
+    AsyncOpenAI(http_client=http_client)
 
     def build_http_client_stub(self: qa_module.QuickAgent) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=transport, headers=self.extra_headers)

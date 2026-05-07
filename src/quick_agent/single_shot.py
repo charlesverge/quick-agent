@@ -17,7 +17,7 @@ from openai.types.chat import (
 from openai.types.shared_params.response_format_json_schema import (
     ResponseFormatJSONSchema,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from quick_agent.agent_utils import parse_structured_result
 from quick_agent.exceptions import (
@@ -82,7 +82,7 @@ async def _run_single_shot_text_via_openai_sdk(
     from quick_agent.executor import _should_convert_null
 
     toolsets = agent._toolsets_for_run()
-    tools: list[ChatCompletionFunctionToolParam] = []
+    tools: list[dict[str, JsonValue]] = []
     for ts in toolsets:
         for tool in ts.tools.values():
             tools.append(tool.function_schema.to_openai_tool())
@@ -241,7 +241,6 @@ async def _run_single_shot_structured_via_openai_sdk(
             raise ValueError(f"Model refused structured response: {refusal_obj}")
         raise ValueError("Model returned an empty structured response.")
     return parse_structured_result(content_obj, schema_cls)
-
 
 async def run_single_shot(
     agent: QuickAgent, *, schema_cls: Type[BaseModel] | None

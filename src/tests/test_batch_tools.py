@@ -3,14 +3,22 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from quick_agent.agent_registry import AgentRegistry
 from quick_agent.agent_tools import AgentTools
 from quick_agent.directory_permissions import DirectoryPermissions
 from quick_agent.executor import ToolCallResult
 from quick_agent.input_adaptors import TextInput
-from quick_agent.models import AgentSpec, ChainStepSpec, LoadedAgentFile, ModelSpec
+from quick_agent.models import (
+    AgentSpec,
+    ChainStepSpec,
+    ChunkProcessingSpec,
+    ContentProcessingSpec,
+    LoadedAgentFile,
+    ModelSpec,
+    SampleSpec,
+)
 from quick_agent.models.batch_request import (
     BatchImportRequest,
     BatchMessage,
@@ -22,6 +30,23 @@ from quick_agent.models.chain_step_spec import ToolChoice
 from quick_agent.models.output_spec import OutputSpec
 from quick_agent.models.run_input import RunInput
 from quick_agent.quick_agent import QuickAgent, QuickAgentConfigError
+
+_CLASSIFICATION_RESULT_RESPONSE_FORMAT: dict[str, JsonValue] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "ClassificationResult",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "confidence": {"type": "number"},
+            },
+            "required": ["label", "confidence"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+}
 
 
 class FakeRegistry(AgentRegistry):
@@ -165,7 +190,7 @@ def test_create_batch_request_bedrock_tool_schema_is_strict() -> None:
 def test_create_batch_request_uses_model_settings_tool_choice_any() -> None:
     qa = _make_quick_agent_for_test()
     qa.loaded.spec.tool_choice = ToolChoice(mode="any")
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.tool_choice is not None
     assert request.tool_choice.mode == "any"
 
@@ -320,9 +345,9 @@ def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> 
             model_name="m",
             temperature=0.1,
             max_completion_tokens=256,
+            bedrock_request_mode="open_weight_invoke",
             extra_body={
                 "inferenceConfig": {"topP": 0.9, "max_new_tokens": 300},
-                "response_format": {"type": "json_schema"},
                 "requestMetadata": {"k": "v"},
             },
         ),
@@ -334,7 +359,6 @@ def test_batch_submit_jsonl_line_uses_open_weight_invoke_model_input_shape() -> 
     line = request.jsonl_line
     model_input = line["modelInput"]
     assert isinstance(model_input, dict)
-    assert model_input["response_format"] == {"type": "json_schema"}
     messages = model_input["messages"]
     assert isinstance(messages, list)
     assert messages[0] == {
@@ -514,6 +538,25 @@ def test_batch_submit_jsonl_line_rejects_external_ref_for_bedrock() -> None:
         _ = request.jsonl_line
 
 
+def test_batch_submit_jsonl_line_rejects_bare_json_schema_type() -> None:
+    request = BatchSubmitRequest(
+        request_id="r-bare-schema",
+        agent_id="a",
+        step_id=None,
+        step_kind="single_shot",
+        model=BatchModelConfig(
+            provider="bedrock",
+            base_url="http://x",
+            model_name="m",
+            bedrock_request_mode="converse",
+        ),
+        response_format={"type": "json_schema"},
+        messages=[BatchMessage(role="user", content="hello")],
+    )
+    with pytest.raises(ValueError, match="json_schema or response_format.structure.jsonSchema"):
+        _ = request.jsonl_line
+
+
 def test_batch_submit_jsonl_line_uses_anthropic_invoke_model_input_shape() -> None:
     request = BatchSubmitRequest(
         request_id="r3",
@@ -527,7 +570,7 @@ def test_batch_submit_jsonl_line_uses_anthropic_invoke_model_input_shape() -> No
             bedrock_request_mode="anthropic_invoke",
             extra_body={"anthropic_version": "bedrock-2023-05-31"},
         ),
-        response_format={"type": "json_schema"},
+        response_format=_CLASSIFICATION_RESULT_RESPONSE_FORMAT,
         messages=[
             BatchMessage(role="system", content="sys"),
             BatchMessage(role="user", content="hello"),
@@ -540,7 +583,7 @@ def test_batch_submit_jsonl_line_uses_anthropic_invoke_model_input_shape() -> No
     assert "response_format" not in model_input
     output_config = model_input["output_config"]
     assert isinstance(output_config, dict)
-    assert output_config["format"] == {"type": "json_schema"}
+    assert output_config["format"] == _CLASSIFICATION_RESULT_RESPONSE_FORMAT
 
 
 def test_batch_submit_jsonl_line_inferrs_anthropic_mode_from_model_name() -> None:
@@ -554,7 +597,7 @@ def test_batch_submit_jsonl_line_inferrs_anthropic_mode_from_model_name() -> Non
             base_url="http://x",
             model_name="anthropic.claude-3-7-sonnet-20250219-v1:0",
         ),
-        response_format={"type": "json_schema"},
+        response_format=_CLASSIFICATION_RESULT_RESPONSE_FORMAT,
         messages=[BatchMessage(role="user", content="hello")],
     )
     line = request.jsonl_line
@@ -575,7 +618,7 @@ def test_batch_submit_jsonl_line_inferrs_qwen_mode_from_model_name() -> None:
             base_url="http://x",
             model_name="qwen.qwen3-next-80b-a3b",
         ),
-        response_format={"type": "json_schema"},
+        response_format=_CLASSIFICATION_RESULT_RESPONSE_FORMAT,
         messages=[BatchMessage(role="user", content="hello")],
     )
     line = request.jsonl_line
@@ -587,9 +630,73 @@ def test_batch_submit_jsonl_line_inferrs_qwen_mode_from_model_name() -> None:
 
 def test_batch_entry_point_returns_submit_request() -> None:
     qa = _make_quick_agent_for_test()
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.step_id == "s1"
     assert request.step_kind == "text"
+
+
+def test_batch_applies_sample_to_request_text() -> None:
+    loaded = _make_loaded_with_chain(
+        [ChainStepSpec(id="s1", kind="text", prompt_section="step:one")]
+    )
+    loaded.spec.content_processing = ContentProcessingSpec(
+        sample=SampleSpec(ratios=(100, 0, 0), max_chunk_tokens=3)
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    request = qa.batch()[0]
+
+    assert request.context.input_text == "one two three"
+    assert request.messages[1].content is not None
+    assert "one two three" in request.messages[1].content
+    assert "four five six" not in request.messages[1].content
+
+
+def test_batch_chunk_processing_returns_request_items() -> None:
+    spec = AgentSpec(
+        name="test",
+        model=ModelSpec(base_url="http://x", model_name="m"),
+        chain=[],
+        output=OutputSpec(file=None),
+        content_processing=ContentProcessingSpec(
+            chunk_processing=ChunkProcessingSpec(
+                mode="map_chunks",
+                provider="semchunks",
+                max_chunk_tokens=3,
+            )
+        ),
+    )
+    loaded = LoadedAgentFile.from_parts(
+        spec=spec,
+        instructions="Summarize.",
+        system_prompt="",
+        step_prompts={},
+    )
+    run_input = RunInput(
+        source_path="in.txt",
+        kind="text",
+        text="one two three four five six seven eight nine",
+        data=None,
+    )
+    qa = _make_quick_agent_for_test(loaded=loaded, run_input=run_input)
+
+    requests = qa.batch()
+
+    assert len(requests) > 1
+    index = 0
+    while index < len(requests):
+        request = requests[index]
+        assert request.context.execution_mode == "chunk"
+        assert request.context.item_index == index
+        assert request.context.item_count == len(requests)
+        assert request.context.input_text
+        index += 1
 
 
 def test_batch_structured_step_includes_response_format_for_non_openai() -> None:
@@ -610,7 +717,7 @@ def test_batch_structured_step_includes_response_format_for_non_openai() -> None
         step_prompts={"step:one": "do thing"},
     )
     qa = _make_quick_agent_for_test(loaded=loaded)
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.response_format is not None
     assert request.response_format["type"] == "json_schema"
 
@@ -645,7 +752,7 @@ def test_create_batch_request_openai_structured_tools_response_as_tool_true_uses
     qa._tools = AgentTools([tools_root])
     qa.tool_ids = ["filesystem_list_files"]
 
-    request = qa.batch()
+    request = qa.batch()[0]
 
     assert request.response_format is None
     assert request.final_result_tool_enabled is True
@@ -681,7 +788,7 @@ def test_create_batch_request_bedrock_structured_tools_defaults_response_as_tool
     qa._tools = AgentTools([tools_root])
     qa.tool_ids = ["filesystem_list_files"]
 
-    request = qa.batch()
+    request = qa.batch()[0]
 
     assert request.response_format is None
     assert request.response_as_tool is True
@@ -809,7 +916,7 @@ def test_create_batch_request_open_weight_structured_tools_response_as_tool_true
         user_prompt="input",
         model_settings=qa._executor.context.build_structured_model_settings(
             schema_cls=ExampleSchema
-        ).model_copy(update={"response_as_tool": True}),
+        ).model_copy(update={"response_as_tool": True, "bedrock_request_mode": "open_weight_invoke"}),
     )
     assert request.response_format is None
     assert request.final_result_tool_enabled is True
@@ -920,7 +1027,7 @@ def test_batch_uses_chain_response_as_tool_override() -> None:
     qa._tools = AgentTools([tools_root])
     qa.tool_ids = ["filesystem_list_files"]
 
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.response_as_tool is True
     assert request.final_result_tool_enabled is True
 
@@ -948,7 +1055,7 @@ def test_create_batch_request_bedrock_structured_no_tools_preserves_response_for
     )
     qa = _make_quick_agent_for_test(loaded=loaded)
 
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.response_format is not None
     assert request.final_result_tool_enabled is False
     assert request.tools is None
@@ -1017,7 +1124,7 @@ def test_create_batch_request_non_bedrock_structured_no_tools_preserves_response
     )
     qa = _make_quick_agent_for_test(loaded=loaded)
 
-    request = qa.batch()
+    request = qa.batch()[0]
     assert request.response_format is not None
     assert request.final_result_tool_enabled is False
     assert request.tools is None
@@ -1216,7 +1323,7 @@ def test_import_outcome_tool_use_missing_tool_calls_raises() -> None:
 @pytest.mark.anyio
 async def test_import_result_tool_use_enforces_max_tool_calls() -> None:
     qa = _make_quick_agent_for_test()
-    submit_request = qa.batch().model_copy(update={"max_tool_calls": 1})
+    submit_request = qa.batch()[0].model_copy(update={"max_tool_calls": 1})
     submit_request.messages = [
         BatchMessage(
             role="assistant",

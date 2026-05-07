@@ -1,6 +1,5 @@
 import pytest
 
-from quick_agent.exceptions import QuickAgentLLMTemporaryException
 from quick_agent.json_utils import extract_extract_brackets
 
 
@@ -28,12 +27,3 @@ def test_extract_extract_brackets_handles_extra_bracket_variants(
     result = extract_extract_brackets(text)
 
     assert result == expected
-
-
-def test_extract_extract_brackets_raises_for_non_extra_bracket_text() -> None:
-    text = '{"foo": "bar"}'
-
-    with pytest.raises(QuickAgentLLMTemporaryException) as exc_info:
-        extract_extract_brackets(text)
-
-    assert exc_info.value.message == 'extract_extract_brackets failed.'

@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-import os
 import typing
 from dataclasses import dataclass
 from typing import Any, Callable, Type
@@ -255,7 +254,10 @@ class AgentExecutor:
             final_result_tool_enabled=submit_request.final_result_tool_enabled,
             bedrock_model_id=submit_request.bedrock_model_id,
             context=BatchAgentContext(
-                input_text=self.config.run_input.text,
+                input_text=submit_request.context.input_text,
+                execution_mode=submit_request.context.execution_mode,
+                item_index=submit_request.context.item_index,
+                item_count=submit_request.context.item_count,
                 state=state,
                 memory=dict(self.config.memory),
                 safe_dir=self.config.loaded.spec.safe_dir,
@@ -377,7 +379,6 @@ class AgentExecutor:
     ) -> BatchImportRequest:
         prefix = "AgentExecutor._local_batch_call"
         api_key_env = self.config.model_spec.api_key_env
-        api_key = os.environ.get(api_key_env, "noop")
         logger.debug(f"{prefix}: api_key_env={api_key_env}")
         client = self.context.build_client(self.config)
         messages: list[ChatCompletionMessageParam] = []

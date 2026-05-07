@@ -726,7 +726,7 @@ async def test_batch_execute_with_tools_verifies_each_step(
         processor = agent.processor
         assert processor
 
-        batch_request = agent.batch()
+        batch_request = agent.batch()[0]
         import_request = await processor.run_batch(batch_request)
         outcome = await agent.import_result(batch_import=import_request)
 
@@ -747,8 +747,11 @@ async def test_batch_execute_with_tools_verifies_each_step(
             if next_req.context and next_req.context.state:
                 ctx_state = next_req.context.state
                 steps_value = ctx_state.get("steps")
-                last_output_value: StepOutput | None = ctx_state.get("last_step_output")
-                steps: StepOutput = {}
+                last_output_value: StepOutput | None = None
+                last_output_obj = ctx_state.get("last_step_output")
+                if isinstance(last_output_obj, (BaseModel, str, dict)):
+                    last_output_value = last_output_obj
+                steps: dict[str, StepOutput] = {}
                 if isinstance(steps_value, dict):
                     steps = steps_value
                 agent.state = {
@@ -757,7 +760,7 @@ async def test_batch_execute_with_tools_verifies_each_step(
                     "last_step_output": last_output_value,
                 }
 
-            batch_request = agent.batch()
+            batch_request = agent.batch()[0]
             import_request = await processor.run_batch(batch_request)
             outcome = await agent.import_result(batch_import=import_request)
 
@@ -801,7 +804,7 @@ async def test_agent_processor_direct_usage(tmp_path: Path) -> None:
     processor = agent.processor
     assert processor
 
-    batch_request = agent.batch()
+    batch_request = agent.batch()[0]
     import_request = await processor.run_batch(batch_request)
     outcome = await agent.import_result(batch_import=import_request)
 
@@ -884,7 +887,7 @@ Then return exactly the word done.
     )
     processor = agent.processor
     assert processor
-    batch_request = agent.batch()
+    batch_request = agent.batch()[0]
     import_request = await processor.run_batch(batch_request)
     outcome = await agent.import_result(batch_import=import_request)
     while outcome.next_request is not None:
@@ -966,7 +969,7 @@ Return exactly the word done.
     )
     processor = agent.processor
     assert processor
-    batch_request = agent.batch()
+    batch_request = agent.batch()[0]
     import_request = await processor.run_batch(batch_request)
     outcome = await agent.import_result(batch_import=import_request)
     assert outcome.result is not None
@@ -1011,6 +1014,6 @@ Return done.
 
     system_tools_dir = Path(_tools_pkg.__file__).resolve().parent
     orchestrator = Orchestrator([agents_dir], [system_tools_dir], safe_dir=safe_root)
-    batch_request = anyio.run(orchestrator.batch, "tool_choice_any", input_path)
+    batch_request = anyio.run(orchestrator.batch, "tool_choice_any", input_path)[0]
     assert batch_request.tool_choice is not None
     assert batch_request.tool_choice.mode == "any"

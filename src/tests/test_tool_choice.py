@@ -93,7 +93,7 @@ def test_tool_choice_chain_overrides_agent_and_filters_allowed_tools(
         tools_root=tools_root,
         tmp_path=tmp_path,
     )
-    request = agent.batch()
+    request = agent.batch()[0]
 
     assert request.tool_choice is not None
     assert request.tool_choice.mode == "required"
@@ -124,7 +124,7 @@ def test_max_tool_calls_chain_overrides_agent(tmp_path: Path) -> None:
         tools_root=tools_root,
         tmp_path=tmp_path,
     )
-    request = agent.batch()
+    request = agent.batch()[0]
     assert request.max_tool_calls == 5
 
 
@@ -138,7 +138,7 @@ def test_max_tool_calls_default_is_three(tmp_path: Path) -> None:
         output=OutputSpec(file=None),
     )
     agent = _make_agent(spec=spec, tools_root=tools_root, tmp_path=tmp_path)
-    request = agent.batch()
+    request = agent.batch()[0]
     assert request.max_tool_calls == 3
 
 
@@ -154,7 +154,7 @@ def test_tool_choice_single_shot_uses_agent_level_none(tmp_path: Path) -> None:
     )
 
     agent = _make_agent(spec=spec, tools_root=tools_root, tmp_path=tmp_path)
-    request = agent.batch()
+    request = agent.batch()[0]
 
     assert request.tool_choice is not None
     assert request.tool_choice.mode == "none"

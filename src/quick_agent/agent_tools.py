@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 from quick_agent.types import AgentResult
 from quick_agent.toolset import AgentToolset
 

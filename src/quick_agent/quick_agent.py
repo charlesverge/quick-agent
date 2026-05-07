@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Type, TypeAlias, TypedDict, cast
+from typing import Any, Awaitable, Callable, Literal, Type, TypeAlias, TypedDict, cast
 from uuid import uuid4
 
 import httpx
@@ -166,6 +166,9 @@ class QuickAgent:
             return None
         return AgentProcessor(self._executor)
 
+    def generate_request_id(self) -> str:
+        return f"{self._executor.config.agent_id}-{uuid4()}"
+
     def _build_http_client(self) -> httpx.AsyncClient | None:
         timeout_seconds = self.model_spec.timeout_seconds or 60.0
         keepalive_expiry_seconds = self.model_spec.keepalive_expiry_seconds
@@ -191,7 +194,9 @@ class QuickAgent:
     def load_batch_context(self, *, context: BatchAgentContext) -> None:
         state_obj = context.state
         agent_id_obj = state_obj.get("agent_id")
-        steps_obj: dict[str, StepOutput] = cast(dict[str, StepOutput], state_obj.get("steps") or {})
+        steps_obj: dict[str, StepOutput] = cast(
+            dict[str, StepOutput], state_obj.get("steps") or {}
+        )
         if not isinstance(agent_id_obj, str):
             raise ValueError("Invalid batch context state.")
         steps: dict[str, StepOutput] = {}
@@ -244,10 +249,27 @@ class QuickAgent:
                 self.run_input.source_path,
                 self._run_nested_agent,
             )
-        self._apply_sample_processing()
-        chunk_output = await self._apply_chunk_processing()
-        if chunk_output is not None:
-            return await self._write_output_handoff(chunk_output)
+        requests = self._build_execution_requests(self.run_input)
+        if requests and requests[0].context.execution_mode == "chunk":
+            items: list[AgentResult] = []
+            if self._is_empty_agent_body():
+                for request in requests:
+                    items.append(request.context.input_text)
+                return await self._write_output_handoff(items)
+            index = 0
+            while index < len(requests):
+                output = await self._execute_request(requests[index])
+                if isinstance(output, BaseModel):
+                    items.append(output.model_dump())
+                else:
+                    items.append(output)
+                index += 1
+            return await self._write_output_handoff(items)
+        if requests:
+            self.run_input = self.run_input.model_copy(
+                update={"text": requests[0].context.input_text}
+            )
+            self._executor.config.run_input = self.run_input
         if self._is_empty_agent_body():
             return await self._write_output_handoff(self.run_input.text)
 
@@ -274,16 +296,17 @@ class QuickAgent:
             self._recorder._write_llm_request_log(None)
 
     def _apply_sample_processing(self) -> None:
+        self.run_input = self._prepare_input(self.run_input)
+
+    def _prepare_input(self, run_input: RunInput) -> RunInput:
         content_processing = self.loaded.spec.content_processing
         if content_processing is None or content_processing.sample is None:
-            return
-        sample_result = SampleRatios().run(
-            self.run_input.text, content_processing.sample
-        )
-        self.run_input = self.run_input.model_copy(update={"text": sample_result})
+            return run_input
+        sample_result = SampleRatios().run(run_input.text, content_processing.sample)
         debug_output_file = content_processing.sample.debug_output_file
         if debug_output_file:
             write_text(Path(debug_output_file), sample_result, self.permissions)
+        return run_input.model_copy(update={"text": sample_result})
 
     async def _apply_chunk_processing(self) -> list[AgentResult] | None:
         content_processing = self.loaded.spec.content_processing
@@ -306,6 +329,117 @@ class QuickAgent:
                 items.append(chunk_output)
             index += 1
         return items
+
+    def _build_execution_requests(
+        self, run_input: RunInput
+    ) -> list[BatchSubmitRequest]:
+        prepared_input = self._prepare_input(run_input)
+        content_processing = self.loaded.spec.content_processing
+        if content_processing is None or content_processing.chunk_processing is None:
+            return [
+                self._build_request(
+                    run_input=prepared_input,
+                    execution_mode="single",
+                    item_index=None,
+                    item_count=None,
+                )
+            ]
+        chunk_texts = self._run_chunk_processing(
+            prepared_input.text, content_processing.chunk_processing
+        )
+        requests: list[BatchSubmitRequest] = []
+        index = 0
+        while index < len(chunk_texts):
+            chunk_input = prepared_input.model_copy(update={"text": chunk_texts[index]})
+            requests.append(
+                self._build_request(
+                    run_input=chunk_input,
+                    execution_mode="chunk",
+                    item_index=index,
+                    item_count=len(chunk_texts),
+                )
+            )
+            index += 1
+        return requests
+
+    def _build_request(
+        self,
+        *,
+        run_input: RunInput,
+        execution_mode: Literal["single", "chunk"],
+        item_index: int | None,
+        item_count: int | None,
+    ) -> BatchSubmitRequest:
+        if self.loaded.spec.chain:
+            step_index = len(self.state["steps"])
+            if step_index >= len(self.loaded.spec.chain):
+                raise ValueError(
+                    "No remaining chain steps for batch request generation."
+                )
+            step = self.loaded.spec.chain[step_index]
+            step_prompt = self.loaded.step_prompts[step.prompt_section]
+            step_instructions = self._build_step_instructions(step_prompt)
+            model_settings = self._executor.context.model_settings_json
+            if step.kind == "structured":
+                if not step.output_schema:
+                    raise ValueError(
+                        f"Step {step.id} is structured but missing output_schema."
+                    )
+                schema_cls = resolve_schema(self.loaded, step.output_schema)
+                model_settings = self._executor.context.build_structured_model_settings(
+                    schema_cls=schema_cls
+                )
+            return self.create_batch_request_for_current_step(
+                step_id=step.id,
+                step_kind=step.kind,
+                output_schema=step.output_schema,
+                instructions=step_instructions,
+                system_prompt=self.loaded.system_prompt,
+                user_prompt=make_user_prompt(run_input, self.state),
+                model_settings=self._resolve_model_settings(
+                    model_settings=model_settings, step=step
+                ),
+                max_tool_calls=self._resolve_max_tool_calls(step),
+                input_text=run_input.text,
+                execution_mode=execution_mode,
+                item_index=item_index,
+                item_count=item_count,
+            )
+
+        single_schema = self.loaded.spec.output.output_schema
+        model_settings = self._executor.context.model_settings_json
+        if single_schema is not None:
+            schema_cls = resolve_schema(self.loaded, single_schema)
+            model_settings = self._executor.context.build_structured_model_settings(
+                schema_cls=schema_cls
+            )
+        return self.create_batch_request_for_current_step(
+            step_id=None,
+            step_kind="single_shot",
+            output_schema=single_schema,
+            instructions=self.loaded.instructions,
+            system_prompt=self.loaded.system_prompt,
+            user_prompt=make_user_prompt(run_input, self.state),
+            model_settings=self._resolve_model_settings(
+                model_settings=model_settings, step=None
+            ),
+            max_tool_calls=self._resolve_max_tool_calls(None),
+            input_text=run_input.text,
+            execution_mode=execution_mode,
+            item_index=item_index,
+            item_count=item_count,
+        )
+
+    async def _execute_request(self, request: BatchSubmitRequest) -> BaseModel | str:
+        schema_cls: Type[BaseModel] | None = None
+        if request.step_kind == "structured":
+            if request.output_schema is None:
+                raise ValueError("Structured request is missing output_schema.")
+            schema_cls = resolve_schema(self.loaded, request.output_schema)
+        return await self._executor._execute_batch_request(
+            batch_request=request,
+            schema_cls=schema_cls,
+        )
 
     async def _run_chunk_agent(self, chunk_text: str) -> AgentResult:
         chunk_agent = QuickAgent(
@@ -455,6 +589,10 @@ class QuickAgent:
         user_prompt: str,
         model_settings: ModelSettings,
         max_tool_calls: int = 3,
+        input_text: str | None = None,
+        execution_mode: Literal["single", "chunk"] = "single",
+        item_index: int | None = None,
+        item_count: int | None = None,
     ) -> BatchSubmitRequest:
         configured_response_as_tool: bool | None = None
         if isinstance(model_settings.response_as_tool, bool):
@@ -478,7 +616,7 @@ class QuickAgent:
                     "strict": True,
                 },
             }
-        request_id = f"{self._executor.config.agent_id}-{uuid4()}"
+        request_id = self.generate_request_id()
         state_obj = json_compatible_value(self.state)
         if not isinstance(state_obj, dict):
             raise ValueError("Expected chain state to be a JSON-compatible object.")
@@ -562,7 +700,10 @@ class QuickAgent:
             response_as_tool=response_as_tool,
             final_result_tool_enabled=final_result_tool_enabled,
             context=BatchAgentContext(
-                input_text=self.run_input.text,
+                input_text=self.run_input.text if input_text is None else input_text,
+                execution_mode=execution_mode,
+                item_index=item_index,
+                item_count=item_count,
                 state=state,
                 memory=dict(self._memory),
                 safe_dir=self.loaded.spec.safe_dir,
@@ -570,60 +711,9 @@ class QuickAgent:
             ),
         )
 
-    def batch(self) -> BatchSubmitRequest:
+    def batch(self) -> list[BatchSubmitRequest]:
         self.model_spec.provider = "bedrock"
-        if self.loaded.spec.chain:
-            step_index = len(self.state["steps"])
-            if step_index >= len(self.loaded.spec.chain):
-                raise ValueError(
-                    "No remaining chain steps for batch request generation."
-                )
-            step = self.loaded.spec.chain[step_index]
-            step_prompt = self.loaded.step_prompts[step.prompt_section]
-            step_instructions = self._build_step_instructions(step_prompt)
-            model_settings = self._executor.context.model_settings_json
-            if step.kind == "structured":
-                if not step.output_schema:
-                    raise ValueError(
-                        f"Step {step.id} is structured but missing output_schema."
-                    )
-                schema_cls = resolve_schema(self.loaded, step.output_schema)
-                model_settings = self._executor.context.build_structured_model_settings(
-                    schema_cls=schema_cls
-                )
-            max_tool_calls = self._resolve_max_tool_calls(step)
-            return self.create_batch_request_for_current_step(
-                step_id=step.id,
-                step_kind=step.kind,
-                output_schema=step.output_schema,
-                instructions=step_instructions,
-                system_prompt=self.loaded.system_prompt,
-                user_prompt=make_user_prompt(self.run_input, self.state),
-                model_settings=self._resolve_model_settings(
-                    model_settings=model_settings, step=step
-                ),
-                max_tool_calls=max_tool_calls,
-            )
-
-        single_schema = self.loaded.spec.output.output_schema
-        model_settings = self._executor.context.model_settings_json
-        if single_schema is not None:
-            schema_cls = resolve_schema(self.loaded, single_schema)
-            model_settings = self._executor.context.build_structured_model_settings(
-                schema_cls=schema_cls
-            )
-        return self.create_batch_request_for_current_step(
-            step_id=None,
-            step_kind="single_shot",
-            output_schema=single_schema,
-            instructions=self.loaded.instructions,
-            system_prompt=self.loaded.system_prompt,
-            user_prompt=self._build_single_shot_prompt(),
-            model_settings=self._resolve_model_settings(
-                model_settings=model_settings, step=None
-            ),
-            max_tool_calls=self._resolve_max_tool_calls(None),
-        )
+        return self._build_execution_requests(self.run_input)
 
     async def import_result(
         self, *, batch_import: BatchImportRequest
@@ -918,17 +1008,11 @@ class QuickAgent:
             self.model_spec.model_name,
             step.id,
         )
-        batch_request = self.create_batch_request_for_current_step(
-            step_id=step.id,
-            step_kind=step.kind,
-            output_schema=step.output_schema,
-            instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
-            user_prompt=user_prompt,
-            model_settings=self._resolve_model_settings(
-                model_settings=self._executor.context.model_settings_json, step=step
-            ),
-            max_tool_calls=self._resolve_max_tool_calls(step),
+        batch_request = self._build_request(
+            run_input=self.run_input,
+            execution_mode="single",
+            item_index=None,
+            item_count=None,
         )
         output = await self._executor._execute_batch_request(
             batch_request=batch_request,
@@ -963,17 +1047,11 @@ class QuickAgent:
             user_prompt=user_prompt,
             model_settings=model_settings,
         )
-        batch_request = self.create_batch_request_for_current_step(
-            step_id=None,
-            step_kind="single_shot",
-            output_schema=self.loaded.spec.output.output_schema,
-            instructions=instructions,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model_settings=self._resolve_model_settings(
-                model_settings=model_settings, step=None
-            ),
-            max_tool_calls=self._resolve_max_tool_calls(None),
+        batch_request = self._build_request(
+            run_input=self.run_input,
+            execution_mode="single",
+            item_index=None,
+            item_count=None,
         )
         return await self._executor._execute_batch_request(
             batch_request=batch_request,
@@ -1014,17 +1092,11 @@ class QuickAgent:
             step.id,
             step.output_schema,
         )
-        batch_request = self.create_batch_request_for_current_step(
-            step_id=step.id,
-            step_kind=step.kind,
-            output_schema=step.output_schema,
-            instructions=step_instructions,
-            system_prompt=self.loaded.system_prompt,
-            user_prompt=user_prompt,
-            model_settings=self._resolve_model_settings(
-                model_settings=model_settings, step=step
-            ),
-            max_tool_calls=self._resolve_max_tool_calls(step),
+        batch_request = self._build_request(
+            run_input=self.run_input,
+            execution_mode="single",
+            item_index=None,
+            item_count=None,
         )
         output = await self._executor._execute_batch_request(
             batch_request=batch_request,

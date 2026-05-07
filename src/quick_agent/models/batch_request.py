@@ -49,6 +49,9 @@ class BatchModelConfig(BaseModel):
 
 class BatchAgentContext(BaseModel):
     input_text: str = ""
+    execution_mode: Literal["single", "chunk"] = "single"
+    item_index: int | None = None
+    item_count: int | None = None
     state: dict[str, object] = Field(default_factory=dict)
     memory: dict[str, object] = Field(default_factory=dict)
     safe_dir: str | None = None
@@ -446,14 +449,18 @@ class BatchSubmitRequest(BaseModel):
                 json_schema_obj = self.response_format.get("json_schema")
                 if isinstance(json_schema_obj, dict):
                     schema_obj = json_schema_obj.get("schema")
+                    description = ""
                     if isinstance(schema_obj, dict):
+                        description_obj = schema_obj.get("description")
+                        if isinstance(description_obj, str):
+                            description = description_obj
                         schema_obj = json.dumps(schema_obj)
                     text_format = {
                         "type": "json_schema",
                         "structure": {
                             "jsonSchema": {
                                 "name": json_schema_obj.get("name"),
-                                "description": json_schema_obj.get("schema", {}).get("description", ""),
+                                "description": description,
                                 "schema": schema_obj,
                             }
                         },

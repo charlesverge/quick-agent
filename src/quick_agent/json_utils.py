@@ -295,7 +295,6 @@ def repair_json_text(text: str, mode = 0) -> str:
     Extract the first top-level JSON object from text.
     This is a fallback for models that wrap JSON in extra text.
     """
-    prefix = "QuickAgent.extract_first_json_object"
     if mode == 0:
       try:
         decoded_object = json_repair.loads(text)

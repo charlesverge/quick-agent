@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic import JsonValue
+
 from quick_agent.agent_state import AgentState
 from quick_agent.agent_tool_schema import (
   strip_agent_state_from_schema,
@@ -41,7 +43,7 @@ class TestTakesAgentState:
 
 class TestStripAgentStateFromSchema:
   def test_strips_state_property_and_defs(self) -> None:
-    schema = {
+    schema: dict[str, JsonValue] = {
       "$defs": {
         "AgentState": {
           "properties": {"memory": {"additionalProperties": True, "type": "object"}},
@@ -59,12 +61,14 @@ class TestStripAgentStateFromSchema:
       "type": "object",
     }
     result = strip_agent_state_from_schema(schema)
-    assert "state" not in result["properties"]
+    properties = result["properties"]
+    assert isinstance(properties, dict)
+    assert "state" not in properties
     assert "$defs" not in result
     assert result["required"] == ["urls"]
 
   def test_preserves_other_defs(self) -> None:
-    schema = {
+    schema: dict[str, JsonValue] = {
       "$defs": {
         "AgentState": {"type": "object"},
         "OtherType": {"type": "string"},
@@ -77,12 +81,16 @@ class TestStripAgentStateFromSchema:
       "type": "object",
     }
     result = strip_agent_state_from_schema(schema)
-    assert "state" not in result["properties"]
-    assert "OtherType" in result["$defs"]
-    assert "AgentState" not in result["$defs"]
+    properties = result["properties"]
+    assert isinstance(properties, dict)
+    assert "state" not in properties
+    defs = result["$defs"]
+    assert isinstance(defs, dict)
+    assert "OtherType" in defs
+    assert "AgentState" not in defs
 
   def test_does_not_mutate_original(self) -> None:
-    schema = {
+    schema: dict[str, JsonValue] = {
       "$defs": {"AgentState": {"type": "object"}},
       "properties": {
         "state": {"$ref": "#/$defs/AgentState"},
@@ -92,10 +100,14 @@ class TestStripAgentStateFromSchema:
       "type": "object",
     }
     strip_agent_state_from_schema(schema)
-    assert "state" in schema["properties"]
-    assert "AgentState" in schema["$defs"]
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    assert "state" in properties
+    defs = schema["$defs"]
+    assert isinstance(defs, dict)
+    assert "AgentState" in defs
 
   def test_no_properties_returns_schema(self) -> None:
-    schema = {"type": "object"}
+    schema: dict[str, JsonValue] = {"type": "object"}
     result = strip_agent_state_from_schema(schema)
     assert result == {"type": "object"}

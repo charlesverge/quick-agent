@@ -68,7 +68,7 @@ class Orchestrator:
         llm_log_path: Path | str | None = None,
         client: openai.AsyncOpenAI | None = None,
         memory: dict[str, object] | None = None,
-    ) -> BatchSubmitRequest:
+    ) -> list[BatchSubmitRequest]:
         bedrock_model = self.registry.get(agent_id).spec.model.model_copy(
             update={"provider": "bedrock"}
         )
@@ -147,8 +147,18 @@ class Orchestrator:
             raise ValueError(
                 "Failed to create agent processor. Check test_mode configuration."
             )
-        batch_request = agent.batch()
-        import_request = await processor.run_batch(batch_request)
+        batch_requests = agent.batch()
+        if len(batch_requests) > 1:
+            items: list[AgentResult] = []
+            for batch_request in batch_requests:
+                import_request = await processor.run_batch(batch_request)
+                outcome = await agent.import_result(batch_import=import_request)
+                result = outcome.result
+                if result is None:
+                    raise ValueError("Batch execution produced no result.")
+                items.append(result)
+            return items
+        import_request = await processor.run_batch(batch_requests[0])
         outcome = await agent.import_result(batch_import=import_request)
 
         while outcome.next_request:
@@ -188,8 +198,8 @@ class Orchestrator:
                     "last_step_output": last_output,
                 }
 
-            batch_request = agent.batch()
-            import_request = await processor.run_batch(batch_request)
+            batch_requests = agent.batch()
+            import_request = await processor.run_batch(batch_requests[0])
             outcome = await agent.import_result(batch_import=import_request)
 
         result = outcome.result
