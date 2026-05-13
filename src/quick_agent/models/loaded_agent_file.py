@@ -213,7 +213,7 @@ def resolve_includes(filename, safe_dir, seen=None):
         if abs_target_path in seen:
             return f"<!-- Circular reference detected: {filename} -->"
 
-        if not os.path.exists(abs_target_path):
+        if not os.path.exists(abs_target_path) or os.path.isdir(abs_target_path):
             return f"<!-- File not found: {filename} -->"
 
         # Track this file in the current branch
