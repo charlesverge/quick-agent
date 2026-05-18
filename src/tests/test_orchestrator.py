@@ -1944,7 +1944,7 @@ async def test_run_single_shot_structured_uses_schema_output_type(
             base_url="https://api.openai.com/v1", model_name="gpt-4.1-mini"
         ),
         chain=[],
-        schemas={"Output": "test_orchestrator:OutputSchema"},
+        schemas={"Output": "tests.test_orchestrator:OutputSchema"},
         output=OutputSpec(file=None, output_schema="Output"),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -2018,7 +2018,7 @@ async def test_run_single_shot_structured_passes_timeout_to_openai_sdk(
             timeout_seconds=77.0,
         ),
         chain=[],
-        schemas={"Output": "test_orchestrator:OutputSchema"},
+        schemas={"Output": "tests.test_orchestrator:OutputSchema"},
         output=OutputSpec(file=None, output_schema="Output"),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -2069,7 +2069,7 @@ async def test_run_single_shot_structured_parses_json_with_fallback(
         name="test",
         model=ModelSpec(base_url="http://x", model_name="m"),
         chain=[],
-        schemas={"Output": "test_orchestrator:OutputSchema"},
+        schemas={"Output": "tests.test_orchestrator:OutputSchema"},
         output=OutputSpec(file=None, output_schema="Output"),
     )
     loaded = LoadedAgentFile.from_parts(
@@ -2100,7 +2100,7 @@ async def test_run_single_shot_structured_rejects_tools() -> None:
         model=ModelSpec(base_url="http://x", model_name="m"),
         chain=[],
         tools=["agent_call"],
-        schemas={"Output": "test_orchestrator:OutputSchema"},
+        schemas={"Output": "tests.test_orchestrator:OutputSchema"},
         output=OutputSpec(file=None, output_schema="Output"),
     )
     loaded = LoadedAgentFile.from_parts(
